@@ -34,11 +34,51 @@ export interface CaptionOptions {
   minDurationSec: number;
   /** Gap forced between neighbouring cues so they do not visually collide. */
   gapSec: number;
+  /** Hangul-to-written-form replacements applied to each cue, e.g.
+   *  "에이피아이" -> "API". Merged over DEFAULT_GLOSSARY. */
+  glossary: Record<string, string>;
   /** A pause longer than this starts a new cue. Without it a cue can span a
    *  long silence, leaving one subtitle parked on screen across the gap and
    *  joining two thoughts the speaker clearly separated. */
   maxGapSec: number;
 }
+
+/**
+ * Whisper transcribes Korean speech phonetically, so terms that are written in
+ * Latin script come back spelled out in Hangul — "API" is heard and written as
+ * "에이피아이". Captions need the written form back.
+ *
+ * Longest-first replacement, so "에이피아이" is consumed before a shorter entry
+ * could match part of it.
+ */
+export const DEFAULT_GLOSSARY: Record<string, string> = {
+  '에이피아이': 'API',
+  '엠씨피': 'MCP',
+  '유아이': 'UI',
+  '유엑스': 'UX',
+  '에이아이': 'AI',
+  '에스알티': 'SRT',
+  '유알엘': 'URL',
+  '제이슨': 'JSON',
+  '깃허브': 'GitHub',
+  '깃헙': 'GitHub',
+  '파이썬': 'Python',
+  '자바스크립트': 'JavaScript',
+  '타입스크립트': 'TypeScript',
+  '노드제이에스': 'Node.js',
+  '클로드': 'Claude',
+  '앤트로픽': 'Anthropic',
+  '챗지피티': 'ChatGPT',
+  '지피티': 'GPT',
+  '유튜브': 'YouTube',
+  '노션': 'Notion',
+  '피그마': 'Figma',
+  '프리미어': 'Premiere',
+  '포토샵': 'Photoshop',
+  '어도비': 'Adobe',
+  '엑셀': 'Excel',
+  '슬랙': 'Slack',
+};
 
 export const DEFAULT_CAPTION_OPTIONS: CaptionOptions = {
   maxCharsPerLine: 20,
@@ -47,6 +87,7 @@ export const DEFAULT_CAPTION_OPTIONS: CaptionOptions = {
   minDurationSec: 1,
   gapSec: 0.04,
   maxGapSec: 1,
+  glossary: DEFAULT_GLOSSARY,
 };
 
 function round(n: number): number {
@@ -60,13 +101,65 @@ function wordsOf(seg: WhisperSegment): WhisperWord[] {
   return [{ word: seg.text.trim(), start: seg.start, end: seg.end }];
 }
 
-/** Greedy wrap that never exceeds maxCharsPerLine unless a single token is
- *  itself longer than the limit. */
+
+/** Apply a Hangul-to-written-form glossary to a line of caption text. */
+export function applyGlossary(text: string, glossary: Record<string, string>): string {
+  const keys = Object.keys(glossary).filter(Boolean).sort((a, b) => b.length - a.length);
+  let out = text;
+  for (const k of keys) {
+    const replacement = glossary[k];
+    if (replacement === undefined) continue;
+    out = out.split(k).join(replacement);
+  }
+  return out;
+}
+
+/** Break a token that is itself longer than the line limit. Korean compounds
+ *  routinely run past it with no space to break on. */
+function hardSplit(token: string, limit: number): string[] {
+  const parts: string[] = [];
+  for (let i = 0; i < token.length; i += limit) parts.push(token.slice(i, i + limit));
+  return parts;
+}
+
+/**
+ * Wrap to at most `maxLines`, then even the lines out.
+ *
+ * A greedy wrap fills line 1 to the limit and leaves whatever is left on line 2,
+ * which is how you end up with a full line above a single dangling syllable.
+ * For the two-line case the split point is instead chosen to minimise the
+ * difference between the two lines, which is what Korean subtitle practice
+ * calls for and what reads better at speed.
+ */
 function wrap(text: string, maxCharsPerLine: number, maxLines: number): string[] {
-  const tokens = text.split(/\s+/).filter(Boolean);
+  const tokens = text
+    .split(/\s+/)
+    .filter(Boolean)
+    .flatMap((t) => (t.length > maxCharsPerLine ? hardSplit(t, maxCharsPerLine) : [t]));
+
+  if (!tokens.length) return [text.trim()];
+
+  // Balanced two-line split: try every word boundary, keep the most even one
+  // that fits.
+  if (maxLines === 2) {
+    const whole = tokens.join(' ');
+    if (whole.length <= maxCharsPerLine) return [whole];
+
+    let best: { lines: string[]; diff: number } | null = null;
+    for (let i = 1; i < tokens.length; i++) {
+      const a = tokens.slice(0, i).join(' ');
+      const b = tokens.slice(i).join(' ');
+      if (a.length > maxCharsPerLine || b.length > maxCharsPerLine) continue;
+      const diff = Math.abs(a.length - b.length);
+      if (!best || diff < best.diff) best = { lines: [a, b], diff };
+    }
+    if (best) return best.lines;
+    // Nothing fits in two lines; fall through to the greedy path and let the
+    // caller's character budget split the cue instead.
+  }
+
   const lines: string[] = [];
   let cur = '';
-
   for (const tok of tokens) {
     const candidate = cur ? `${cur} ${tok}` : tok;
     if (candidate.length <= maxCharsPerLine || !cur) {
@@ -93,6 +186,8 @@ export function buildCues(
   options: Partial<CaptionOptions> = {},
 ): Cue[] {
   const opt: CaptionOptions = { ...DEFAULT_CAPTION_OPTIONS, ...options };
+  // Caller entries win, but the defaults stay in place unless overridden by key.
+  const glossary = { ...DEFAULT_GLOSSARY, ...(options.glossary ?? {}) };
   const charBudget = Math.max(1, opt.maxCharsPerLine * opt.maxLines);
 
   const cues: Cue[] = [];
@@ -102,7 +197,8 @@ export function buildCues(
     if (!buf.length) return;
     const first = buf[0]!;
     const last = buf[buf.length - 1]!;
-    const text = buf.map((w) => w.word.trim()).join(' ').replace(/\s+/g, ' ').trim();
+    const raw = buf.map((w) => w.word.trim()).join(' ').replace(/\s+/g, ' ').trim();
+    const text = applyGlossary(raw, glossary);
     if (!text) { buf = []; return; }
     cues.push({
       index: cues.length + 1,

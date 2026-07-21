@@ -6,7 +6,7 @@
  * export.
  */
 
-import { buildCues, toSrt, toVtt, toTxt, serializeCues } from '../../utils/captions.js';
+import { buildCues, toSrt, toVtt, toTxt, serializeCues, applyGlossary, DEFAULT_GLOSSARY } from '../../utils/captions.js';
 import type { WhisperSegment } from '../../utils/whisperRunner.js';
 
 /** Build a segment whose words are evenly spaced one per `step` seconds. */
@@ -140,5 +140,63 @@ describe('serialization', () => {
     expect(serializeCues(cues, 'vtt').startsWith('WEBVTT')).toBe(true);
     expect(serializeCues(cues, 'txt')).toContain('(1:01)');
     expect(serializeCues(cues, 'srt')).toContain('-->');
+  });
+});
+
+describe('glossary', () => {
+  it('restores written forms Whisper spelled out in Hangul', () => {
+    expect(applyGlossary('에이피아이를 호출합니다', DEFAULT_GLOSSARY)).toBe('API를 호출합니다');
+  });
+
+  it('replaces the longest key first', () => {
+    // "지피티" is also a key; "챗지피티" must win where both could match.
+    expect(applyGlossary('챗지피티', DEFAULT_GLOSSARY)).toBe('ChatGPT');
+  });
+
+  it('applies caller entries on top of the defaults', () => {
+    const merged = { ...DEFAULT_GLOSSARY, 헤르메스: 'Hermes' };
+    expect(applyGlossary('헤르메스와 에이피아이', merged)).toBe('Hermes와 API');
+  });
+
+  it('leaves text alone when nothing matches', () => {
+    expect(applyGlossary('오늘 날씨가 좋습니다', DEFAULT_GLOSSARY)).toBe('오늘 날씨가 좋습니다');
+  });
+
+  it('is applied while cues are built', () => {
+    const cues = buildCues([segment(0, ['에이피아이', '연동'])]);
+    expect(cues[0]!.text).toBe('API 연동');
+  });
+
+  it('lets a caller override a built-in entry', () => {
+    const cues = buildCues([segment(0, ['클로드'])], { glossary: { 클로드: '클로드' } });
+    expect(cues[0]!.text).toBe('클로드');
+  });
+});
+
+describe('line balancing', () => {
+  it('evens out a two-line cue instead of dangling a short tail', () => {
+    // Greedy wrapping would fill line 1 and leave one short word on line 2.
+    const cues = buildCues([segment(0, ['가나다라마', '바사아자차', '카타파하'])], {
+      maxCharsPerLine: 12,
+      maxLines: 2,
+    });
+    const [a, b] = cues[0]!.lines;
+    expect(cues[0]!.lines).toHaveLength(2);
+    expect(Math.abs(a!.length - b!.length)).toBeLessThanOrEqual(6);
+  });
+
+  it('breaks a token longer than the line limit', () => {
+    const long = '가'.repeat(30);
+    const cues = buildCues([segment(0, [long])], { maxCharsPerLine: 10, maxLines: 2 });
+    for (const cue of cues) {
+      for (const line of cue.lines) {
+        expect(line.length).toBeLessThanOrEqual(10);
+      }
+    }
+  });
+
+  it('keeps a cue on one line when it fits', () => {
+    const cues = buildCues([segment(0, ['짧은', '문장'])], { maxCharsPerLine: 20, maxLines: 2 });
+    expect(cues[0]!.lines).toHaveLength(1);
   });
 });

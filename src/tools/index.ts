@@ -224,7 +224,9 @@ export class PremiereProTools {
           maxLines: z.number().optional().describe('Lines per cue. Default 2.'),
           maxDurationSec: z.number().optional().describe('A cue is split once it would run longer than this. Default 6.'),
           minDurationSec: z.number().optional().describe('Shortest time a cue stays on screen. Default 1.'),
-          correctionThreshold: z.number().optional().describe('Minimum similarity to accept a script line as a correction. Default 0.6.')
+          correctionThreshold: z.number().optional().describe('Minimum similarity to accept a script line as a correction. Default 0.6.'),
+          glossary: z.record(z.string()).optional().describe('Extra Hangul-to-written-form replacements, e.g. {"에이피아이":"API"}. Merged over the built-in glossary, which already covers common tech terms Whisper spells out phonetically in Korean.'),
+          importToSequence: z.string().optional().describe('Sequence ID. When given, the subtitle file is imported and attached as a caption track on that sequence. SRT only.')
         })
       },
       {
@@ -237,6 +239,58 @@ export class PremiereProTools {
           paddingSec: z.number().optional().describe('Seconds added to each end of the returned span. Default 0.05.'),
           model: z.string().optional().describe('Whisper model size. Default "base".'),
           language: z.string().optional().describe('Language code or "auto". Default "ko".')
+        })
+      },
+      {
+        name: 'auto_cut_edit',
+        description: 'One-shot cut edit: analyzes the speech in the sequence\'s media, then removes silences, repeated takes and (optionally) filler words from the timeline, and writes captions. Runs as a DRY RUN by default so you can read the plan and approve it before anything is touched. Resolves the media file from the timeline itself when mediaPath is omitted, backs the sequence up before cutting, and converts source-clip times to timeline times, so the whole chain is one call instead of five.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence to edit. Defaults to the active sequence.'),
+          mediaPath: z.string().optional().describe('Media file to analyze. Omit to use the first clip on the lowest targeted video track.'),
+          scriptPath: z.string().optional().describe('Reference script/narration. Used to correct misrecognitions before captions are written.'),
+          dryRun: z.boolean().optional().describe('Return the plan without touching the timeline. DEFAULT TRUE — pass false to actually cut.'),
+          backup: z.boolean().optional().describe('Duplicate the sequence before cutting so the original survives. Default true.'),
+          removeFillers: z.boolean().optional().describe('Also cut filler words ("음", "uh"). Default false.'),
+          fillerWords: z.array(z.string()).optional().describe('Filler tokens to cut. Defaults to the unambiguous set.'),
+          minGapSec: z.number().optional().describe('Silence between words (seconds) to treat as trimmable. Default 0.6.'),
+          paddingSec: z.number().optional().describe('Silence kept at each end of a trimmed gap. Default 0.15.'),
+          similarityThreshold: z.number().optional().describe('0..1 match to treat two takes as duplicates. Default 0.75.'),
+          captions: z.boolean().optional().describe('Write a subtitle file after cutting. Default true. Ignored on a dry run.'),
+          captionFormat: z.enum(['srt', 'vtt', 'txt']).optional().describe('Subtitle format. Default srt.'),
+          model: z.string().optional().describe('Whisper model size. Default "base".'),
+          language: z.string().optional().describe('Language code or "auto". Default "ko".'),
+          videoTrackIndices: z.array(z.number().int().min(0)).optional().describe('Video tracks to cut. Defaults to all.'),
+          audioTrackIndices: z.array(z.number().int().min(0)).optional().describe('Audio tracks to cut. Defaults to all.')
+        })
+      },
+      {
+        name: 'backup_sequence',
+        description: 'Duplicates a sequence so an edit can be undone wholesale. apply_timeline_removals and auto_cut_edit already do this on their own; call this directly before any other risky change.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence to back up. Defaults to the active sequence.'),
+          label: z.string().optional().describe('Label used in the backup name. Default "backup".')
+        })
+      },
+      {
+        name: 'restore_sequence_backup',
+        description: 'Makes a backup sequence the active one after a bad edit. Optionally deletes the damaged sequence. Use list_sequences to find the backup name.',
+        inputSchema: z.object({
+          backupSequenceId: z.string().describe('The backup sequence to restore (its ID, from list_sequences).'),
+          deleteDamaged: z.boolean().optional().describe('Delete the sequence that was being edited. Default false — keep it until you have confirmed the restore.'),
+          damagedSequenceId: z.string().optional().describe('The sequence to delete. Required when deleteDamaged is true.')
+        })
+      },
+      {
+        name: 'make_short',
+        description: 'Extracts a vertical (or square) short-form clip from a range of the timeline: creates a subsequence of that range, then auto-reframes it to the target aspect so the speaker stays in frame. Use find_speech_spans to locate the moment by what was said, then feed its start/end here.',
+        inputSchema: z.object({
+          start: z.number().describe('Range start in timeline seconds.'),
+          end: z.number().describe('Range end in timeline seconds.'),
+          sequenceId: z.string().optional().describe('Source sequence. Defaults to the active sequence.'),
+          name: z.string().optional().describe('Name for the resulting sequence. Defaults to "<source> short <start>-<end>".'),
+          aspect: z.enum(['9:16', '1:1', '4:5', '16:9']).optional().describe('Target aspect ratio. Default 9:16 (Reels/Shorts/TikTok).'),
+          motionPreset: z.enum(['slower', 'default', 'faster']).optional().describe('Auto-reframe tracking responsiveness. Default "default".'),
+          reframe: z.boolean().optional().describe('Run auto-reframe. Default true. Set false to only cut the subsequence.')
         })
       },
       {
@@ -253,7 +307,8 @@ export class PremiereProTools {
           videoTrackIndices: z.array(z.number().int().min(0)).optional().describe('Video track indices to cut. Defaults to all video tracks.'),
           audioTrackIndices: z.array(z.number().int().min(0)).optional().describe('Audio track indices to cut. Defaults to all audio tracks.'),
           rippleDelete: z.boolean().optional().describe('Ripple-delete (close the gap) vs lift (leave gap). Default true.'),
-          dryRun: z.boolean().optional().describe('If true, return the computed cut plan without modifying the timeline. Default false.')
+          dryRun: z.boolean().optional().describe('If true, return the computed cut plan without modifying the timeline. Default false.'),
+          backup: z.boolean().optional().describe('Duplicate the sequence before cutting so the original survives. Default true.')
         })
       },
 
@@ -575,11 +630,19 @@ export class PremiereProTools {
         case 'proofread_transcript':
           return await this.proofreadTranscript(args.filePath, args.scriptPath, args.model, args.language, args.confidenceThreshold, args.correctionThreshold);
         case 'export_captions':
-          return await this.exportCaptions(args.filePath, args.outputPath, args.format, args.scriptPath, args.model, args.language, args.maxCharsPerLine, args.maxLines, args.maxDurationSec, args.minDurationSec, args.correctionThreshold);
+          return await this.exportCaptions(args.filePath, args.outputPath, args.format, args.scriptPath, args.model, args.language, args.maxCharsPerLine, args.maxLines, args.maxDurationSec, args.minDurationSec, args.correctionThreshold, args.glossary, args.importToSequence);
         case 'find_speech_spans':
           return await this.findSpeechSpans(args.filePath, args.query, args.threshold, args.paddingSec, args.model, args.language);
+        case 'auto_cut_edit':
+          return await this.autoCutEdit(args);
+        case 'backup_sequence':
+          return await this.backupSequence(args.sequenceId, args.label);
+        case 'restore_sequence_backup':
+          return await this.restoreSequenceBackup(args.backupSequenceId, args.deleteDamaged, args.damagedSequenceId);
+        case 'make_short':
+          return await this.makeShort(args.start, args.end, args.sequenceId, args.name, args.aspect, args.motionPreset, args.reframe);
         case 'apply_timeline_removals':
-          return await this.applyTimelineRemovals(args.sequenceId, args.removals, args.videoTrackIndices, args.audioTrackIndices, args.rippleDelete, args.dryRun, args.sourceTimes, args.sourceMediaPath);
+          return await this.applyTimelineRemovals(args.sequenceId, args.removals, args.videoTrackIndices, args.audioTrackIndices, args.rippleDelete, args.dryRun, args.sourceTimes, args.sourceMediaPath, args.backup);
 
         // Effects and Transitions
         case 'add_transition_to_clip':
@@ -1460,6 +1523,8 @@ export class PremiereProTools {
     maxDurationSec?: number,
     minDurationSec?: number,
     correctionThreshold?: number,
+    glossary?: Record<string, string>,
+    importToSequence?: string,
   ): Promise<any> {
     if (!filePath) {
       return JSON.stringify({ success: false, error: 'filePath is required' });
@@ -1514,6 +1579,7 @@ export class PremiereProTools {
         maxLines: maxLines ?? 2,
         maxDurationSec: maxDurationSec ?? 6,
         minDurationSec: minDurationSec ?? 1,
+        ...(glossary ? { glossary } : {}),
       });
       if (cues.length === 0) {
         return JSON.stringify({ success: false, error: 'no speech found to caption' });
@@ -1523,10 +1589,29 @@ export class PremiereProTools {
       const target = outputPath || filePath.replace(/\.[^.\/\\]+$/, '') + '.' + fmt;
       writeFileSync(target, body, 'utf8');
 
+      // Optionally put the file straight onto the sequence as a caption track,
+      // so the round trip through the Premiere UI is not needed.
+      let captionTrack: any = null;
+      if (importToSequence) {
+        if (fmt !== 'srt') {
+          captionTrack = { success: false, error: 'importToSequence needs SRT; re-run with format "srt"' };
+        } else {
+          const imported: any = await this.importMedia(target);
+          const itemId = imported?.id || imported?.nodeId || null;
+          if (!imported?.success || !itemId) {
+            captionTrack = { success: false, error: imported?.error || 'could not import the subtitle file' };
+          } else {
+            const trackRaw: any = await this.createCaptionTrack(importToSequence, String(itemId), 0, 'subtitle');
+            captionTrack = typeof trackRaw === 'string' ? JSON.parse(trackRaw) : trackRaw;
+          }
+        }
+      }
+
       const last = cues[cues.length - 1]!;
       return JSON.stringify({
         success: true,
         outputPath: target,
+        captionTrack,
         format: fmt,
         language: language_,
         cueCount: cues.length,
@@ -1579,6 +1664,353 @@ export class PremiereProTools {
     }
   }
 
+  /** Resolve a sequence id/name, defaulting to the active sequence. Several of
+   *  the composite tools need the id before they can do anything else. */
+  private async resolveSequence(sequenceId?: string): Promise<{ id: string; name: string } | { error: string }> {
+    const script = `
+      try {
+        var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
+        if (!sequence) return JSON.stringify({ success: false, error: "sequence not found" });
+        return JSON.stringify({ success: true, id: sequence.sequenceID, name: sequence.name });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    try {
+      const raw: any = await this.bridge.executeScript(script);
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!parsed || !parsed.success) return { error: parsed?.error || 'could not resolve sequence' };
+      return { id: String(parsed.id), name: String(parsed.name) };
+    } catch (e: any) {
+      return { error: `could not resolve sequence: ${e?.message || e}` };
+    }
+  }
+
+  /** Timestamp suffix so successive backups of one sequence stay distinguishable. */
+  private backupLabel(label = 'backup'): string {
+    const d = new Date();
+    const two = (n: number) => String(n).padStart(2, '0');
+    return `[${label} ${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}]`;
+  }
+
+  private async backupSequence(sequenceId?: string, label?: string): Promise<any> {
+    const seq = await this.resolveSequence(sequenceId);
+    if ('error' in seq) return JSON.stringify({ success: false, error: seq.error });
+
+    const backupName = `${seq.name} ${this.backupLabel(label)}`;
+    const raw: any = await this.duplicateSequence(seq.id, backupName);
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!parsed || parsed.success === false) {
+      return JSON.stringify({ success: false, error: parsed?.error || 'duplicate failed', sourceSequence: seq.name });
+    }
+    return JSON.stringify({
+      success: true,
+      message: `Backed up "${seq.name}" as "${backupName}"`,
+      sourceSequenceId: seq.id,
+      sourceSequenceName: seq.name,
+      backupSequenceName: backupName,
+      backupSequenceId: parsed.sequenceId || parsed.id || null,
+      hint: 'If the edit goes wrong, use list_sequences to find this backup and restore_sequence_backup to make it active.',
+    });
+  }
+
+  private async restoreSequenceBackup(
+    backupSequenceId?: string,
+    deleteDamaged = false,
+    damagedSequenceId?: string,
+  ): Promise<any> {
+    if (!backupSequenceId) return JSON.stringify({ success: false, error: 'backupSequenceId is required' });
+    if (deleteDamaged && !damagedSequenceId) {
+      return JSON.stringify({ success: false, error: 'damagedSequenceId is required when deleteDamaged is true' });
+    }
+
+    const script = `
+      try {
+        var backup = __findSequence(${JSON.stringify(backupSequenceId)});
+        if (!backup) return JSON.stringify({ success: false, error: "backup sequence not found" });
+        app.project.openSequence(backup.sequenceID);
+
+        var deleted = null;
+        ${deleteDamaged ? `
+        var damaged = __findSequence(${JSON.stringify(damagedSequenceId ?? '')});
+        if (damaged && damaged.sequenceID !== backup.sequenceID) {
+          deleted = damaged.name;
+          damaged.projectItem.deleteBin();
+        }` : ''}
+
+        return JSON.stringify({
+          success: true,
+          message: "Restored \\"" + backup.name + "\\"" + (deleted ? " and deleted \\"" + deleted + "\\"" : ""),
+          activeSequence: backup.name,
+          activeSequenceId: backup.sequenceID,
+          deletedSequence: deleted
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+    return await this.bridge.executeScript(script);
+  }
+
+  /** Read the media path of the first clip on the lowest non-empty video track.
+   *  Saves the caller a list_project_items round trip in the common case where
+   *  the sequence is one long take. */
+  private async resolveSequenceMedia(sequenceId?: string): Promise<string | null> {
+    const script = `
+      try {
+        var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
+        if (!sequence) return JSON.stringify({ success: false });
+        for (var t = 0; t < sequence.videoTracks.numTracks; t++) {
+          var track = sequence.videoTracks[t];
+          for (var c = 0; c < track.clips.numItems; c++) {
+            try {
+              var mp = track.clips[c].projectItem ? track.clips[c].projectItem.getMediaPath() : "";
+              if (mp) return JSON.stringify({ success: true, mediaPath: mp });
+            } catch (inner) {}
+          }
+        }
+        for (var a = 0; a < sequence.audioTracks.numTracks; a++) {
+          var atrack = sequence.audioTracks[a];
+          for (var ac = 0; ac < atrack.clips.numItems; ac++) {
+            try {
+              var amp = atrack.clips[ac].projectItem ? atrack.clips[ac].projectItem.getMediaPath() : "";
+              if (amp) return JSON.stringify({ success: true, mediaPath: amp });
+            } catch (inner2) {}
+          }
+        }
+        return JSON.stringify({ success: false });
+      } catch (e) {
+        return JSON.stringify({ success: false });
+      }
+    `;
+    try {
+      const raw: any = await this.bridge.executeScript(script);
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return parsed?.success ? String(parsed.mediaPath) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Analyze -> plan -> (approve) -> cut -> caption, in one call.
+   *
+   * Defaults to a dry run. Cutting a timeline is destructive and the analysis
+   * is a judgement call about someone's speech, so the plan is shown first and
+   * the caller opts in to applying it.
+   */
+  private async autoCutEdit(args: any): Promise<any> {
+    const dryRun = args.dryRun !== false;
+    const wantCaptions = args.captions !== false;
+    const steps: string[] = [];
+
+    const seq = await this.resolveSequence(args.sequenceId);
+    if ('error' in seq) return JSON.stringify({ success: false, stage: 'resolve-sequence', error: seq.error });
+    steps.push(`sequence: ${seq.name}`);
+
+    const mediaPath = args.mediaPath || (await this.resolveSequenceMedia(args.sequenceId));
+    if (!mediaPath) {
+      return JSON.stringify({
+        success: false,
+        stage: 'resolve-media',
+        error: 'could not determine which media file to analyze. Pass mediaPath (see list_project_items -> mediaPath).',
+      });
+    }
+    steps.push(`media: ${mediaPath}`);
+
+    // 1. Analyze speech.
+    let analysis: any;
+    try {
+      analysis = await analyzeSpeechEditPoints(
+        mediaPath,
+        args.model ?? 'base',
+        args.language ?? 'ko',
+        args.similarityThreshold ?? 0.75,
+        args.minGapSec ?? 0.6,
+        args.paddingSec ?? 0.15,
+        args.removeFillers ?? false,
+        args.fillerWords && args.fillerWords.length ? args.fillerWords : DEFAULT_FILLERS,
+      );
+    } catch (e: any) {
+      return JSON.stringify({ success: false, stage: 'analyze', error: `speech analysis failed: ${e?.message || e}` });
+    }
+    if (!analysis.success) {
+      return JSON.stringify({ success: false, stage: 'analyze', error: analysis.error });
+    }
+    if (!analysis.suggestedRemovals.length) {
+      return JSON.stringify({
+        success: true,
+        stage: 'analyze',
+        message: 'nothing to cut — no silences, repeated takes or fillers passed the thresholds',
+        stats: analysis.stats,
+        steps,
+      });
+    }
+    steps.push(
+      `found ${analysis.stats.silenceGapCount} silence gaps, ${analysis.stats.duplicateCount} repeated takes, ` +
+      `${analysis.stats.fillerCount} fillers = ${analysis.stats.totalRemovableSec}s removable`,
+    );
+
+    // 2. Cut (or plan the cut).
+    const removalsRaw: any = await this.applyTimelineRemovals(
+      seq.id,
+      analysis.suggestedRemovals.map((r: any) => ({ start: r.start, end: r.end })),
+      args.videoTrackIndices,
+      args.audioTrackIndices,
+      true,
+      dryRun,
+      true,
+      mediaPath,
+      args.backup !== false,
+    );
+    const removals = typeof removalsRaw === 'string' ? JSON.parse(removalsRaw) : removalsRaw;
+    if (!removals.success) {
+      return JSON.stringify({ success: false, stage: 'apply', error: removals.error, skipped: removals.skipped, steps });
+    }
+    steps.push(dryRun ? `planned ${removals.spanCount} cuts` : `applied ${removals.spanCount} cuts`);
+
+    if (dryRun) {
+      return JSON.stringify({
+        success: true,
+        dryRun: true,
+        message: `Plan ready: ${removals.spanCount} cuts removing about ${analysis.stats.totalRemovableSec}s. Re-run with dryRun:false to apply.`,
+        sequence: seq.name,
+        mediaPath,
+        analysis: {
+          stats: analysis.stats,
+          duplicateTakes: analysis.duplicateTakes.slice(0, 10),
+          fillerWords: analysis.fillerWords.slice(0, 20),
+        },
+        cutPlan: removals.plan?.slice(0, 40),
+        cutPlanTruncated: (removals.plan?.length ?? 0) > 40,
+        skipped: removals.skipped,
+        steps,
+      });
+    }
+
+    // 3. Captions, from the same cached transcript.
+    let captions: any = null;
+    if (wantCaptions) {
+      const capRaw: any = await this.exportCaptions(
+        mediaPath,
+        undefined,
+        args.captionFormat ?? 'srt',
+        args.scriptPath,
+        args.model ?? 'base',
+        args.language ?? 'ko',
+        undefined, undefined, undefined, undefined, undefined,
+      );
+      captions = typeof capRaw === 'string' ? JSON.parse(capRaw) : capRaw;
+      steps.push(captions?.success ? `captions: ${captions.outputPath}` : `captions failed: ${captions?.error}`);
+    }
+
+    return JSON.stringify({
+      success: true,
+      dryRun: false,
+      message: `Cut ${removals.spanCount} spans from "${seq.name}"` + (removals.inSync ? '' : ' — SYNC WARNING, check the timeline'),
+      sequence: seq.name,
+      mediaPath,
+      backupSequenceName: removals.backupSequenceName ?? null,
+      removedClipCount: removals.removedClipCount,
+      removedSecPerTrack: removals.removedSecPerTrack,
+      inSync: removals.inSync,
+      syncWarning: removals.syncWarning,
+      skippedCount: removals.skippedCount,
+      skipped: removals.skipped,
+      captions,
+      steps,
+      // Captions describe the ORIGINAL take; the timeline no longer matches it.
+      captionNote: wantCaptions && captions?.success
+        ? 'Caption times follow the uncut media. Re-run export_captions against the exported cut if you need them aligned to the new edit.'
+        : undefined,
+    });
+  }
+
+  /**
+   * Cut a short-form clip out of a range: subsequence the range, then reframe it
+   * to a vertical/square aspect.
+   */
+  private async makeShort(
+    start?: number,
+    end?: number,
+    sequenceId?: string,
+    name?: string,
+    aspect: '9:16' | '1:1' | '4:5' | '16:9' = '9:16',
+    motionPreset?: string,
+    reframe = true,
+  ): Promise<any> {
+    if (typeof start !== 'number' || typeof end !== 'number') {
+      return JSON.stringify({ success: false, error: 'start and end (timeline seconds) are required' });
+    }
+    if (end <= start) {
+      return JSON.stringify({ success: false, error: 'end must be greater than start' });
+    }
+
+    const seq = await this.resolveSequence(sequenceId);
+    if ('error' in seq) return JSON.stringify({ success: false, error: seq.error });
+
+    const shortName = name || `${seq.name} short ${Math.round(start)}-${Math.round(end)}`;
+
+    // Set in/out over the range, then let Premiere build the subsequence.
+    const script = `
+      try {
+        var sequence = __findSequence(${JSON.stringify(seq.id)});
+        if (!sequence) return JSON.stringify({ success: false, error: "sequence not found" });
+        app.project.openSequence(sequence.sequenceID);
+        var active = app.project.activeSequence;
+
+        active.setInPoint(${start});
+        active.setOutPoint(${end});
+
+        var before = app.project.sequences.numSequences;
+        active.createSubsequence(true);
+        var after = app.project.sequences.numSequences;
+        if (after <= before) return JSON.stringify({ success: false, error: "subsequence was not created" });
+
+        var created = app.project.sequences[after - 1];
+        created.name = ${JSON.stringify(shortName)};
+        return JSON.stringify({ success: true, sequenceId: created.sequenceID, name: created.name });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+
+    const subRaw: any = await this.bridge.executeScript(script);
+    const sub = typeof subRaw === 'string' ? JSON.parse(subRaw) : subRaw;
+    if (!sub || !sub.success) {
+      return JSON.stringify({ success: false, stage: 'subsequence', error: sub?.error || 'subsequence failed' });
+    }
+
+    if (!reframe || aspect === '16:9') {
+      return JSON.stringify({
+        success: true,
+        message: `Created "${sub.name}" from ${start}s-${end}s`,
+        sequenceId: sub.sequenceId,
+        name: sub.name,
+        aspect: '16:9',
+        reframed: false,
+      });
+    }
+
+    const ratios: Record<string, [number, number]> = { '9:16': [9, 16], '1:1': [1, 1], '4:5': [4, 5] };
+    const [num, den] = ratios[aspect] ?? [9, 16];
+
+    const reframeRaw: any = await this.autoReframeSequence(sub.sequenceId, num, den, motionPreset ?? 'default', `${sub.name} ${aspect}`);
+    const reframed = typeof reframeRaw === 'string' ? JSON.parse(reframeRaw) : reframeRaw;
+
+    return JSON.stringify({
+      success: true,
+      message: `Created "${sub.name}" from ${start}s-${end}s and reframed to ${aspect}`,
+      sourceSequence: seq.name,
+      subsequenceId: sub.sequenceId,
+      subsequenceName: sub.name,
+      aspect,
+      reframed: Boolean(reframed?.success),
+      reframeResult: reframed,
+      hint: 'Use export_sequence to render it, and export_captions if the short needs burned-in subtitles.',
+    });
+  }
+
   private async applyTimelineRemovals(
     sequenceId?: string,
     removals?: Array<{ start: number; end: number }>,
@@ -1588,6 +2020,7 @@ export class PremiereProTools {
     dryRun = false,
     sourceTimes = false,
     sourceMediaPath?: string,
+    backup = true,
   ): Promise<any> {
     const spans = (removals ?? [])
       .filter((s) => s && typeof s.start === 'number' && typeof s.end === 'number' && s.end > s.start)
@@ -1604,6 +2037,22 @@ export class PremiereProTools {
         success: false,
         error: 'sourceTimes=true requires sourceMediaPath (the media file that was analyzed) so source-clip times can be mapped onto the timeline',
       });
+    }
+
+    // Back up before cutting. Ripple deletes across many spans are not something
+    // a single undo reliably walks back, and the analyzers can be wrong about a
+    // take, so the untouched sequence is kept alongside the edited one.
+    let backupSequenceName: string | null = null;
+    if (backup && !dryRun) {
+      const backedUp: any = await this.backupSequence(sequenceId);
+      const parsed = typeof backedUp === 'string' ? JSON.parse(backedUp) : backedUp;
+      if (!parsed?.success) {
+        return JSON.stringify({
+          success: false,
+          error: `refusing to cut: the backup failed (${parsed?.error || 'unknown error'}). Pass backup:false to cut anyway.`,
+        });
+      }
+      backupSequenceName = parsed.backupSequenceName;
     }
 
     const script = `
@@ -1875,7 +2324,15 @@ export class PremiereProTools {
       }
     `;
 
-    return await this.bridge.executeScript(script);
+    const raw: any = await this.bridge.executeScript(script);
+    if (!backupSequenceName) return raw;
+    // Surface the backup name so the caller knows what to restore.
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return JSON.stringify({ ...parsed, backupSequenceName });
+    } catch {
+      return raw;
+    }
   }
 
   // Effects and Transitions Implementation
