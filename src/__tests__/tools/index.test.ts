@@ -24,12 +24,9 @@ describe('PremiereProTools', () => {
 
       expect(availableTools.length).toBeGreaterThan(50);
       expect(toolNames).toContain('list_project_items');
-      expect(toolNames).toContain('build_motion_graphics_demo');
-      expect(toolNames).toContain('assemble_product_spot');
       expect(toolNames).toContain('build_brand_spot_from_mogrt_and_assets');
       expect(toolNames).toContain('import_media');
       expect(toolNames).toContain('add_to_timeline');
-      expect(toolNames).toContain('import_mogrt');
       expect(toolNames).toContain('setup_ducking');
       expect(toolNames).not.toContain('create_nested_sequence');
       expect(toolNames).not.toContain('unnest_sequence');

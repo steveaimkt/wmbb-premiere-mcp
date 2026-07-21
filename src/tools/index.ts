@@ -2971,7 +2971,7 @@ export class PremiereProTools {
         if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
         return JSON.stringify({
           success: false,
-          error: "Text overlay requires a MOGRT file path. Use the mogrtPath parameter with a .mogrt template file, or use import_mogrt tool.",
+          error: "Text overlay requires a MOGRT file path. Pass mogrtPath pointing to a .mogrt template file.",
           note: "Legacy titles (app.project.createNewTitle) are not supported in current Premiere Pro ExtendScript API."
         });
       } catch (e) {
