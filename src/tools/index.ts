@@ -11,7 +11,11 @@ import { Logger } from '../utils/logger.js';
 import { createMotionDemoAssets } from '../utils/demoAssets.js';
 import { analyzeAudioEditPoints } from '../utils/audioAnalysis.js';
 import { analyzeSpeechEditPoints } from '../utils/speechAnalysis.js';
+import { buildCues, serializeCues } from '../utils/captions.js';
+import { findTextSpans, DEFAULT_FILLERS } from '../utils/cutEditing.js';
+import { transcribeAudio } from '../utils/whisperRunner.js';
 import { proofreadTranscript } from '../utils/proofread.js';
+import { writeFileSync } from 'fs';
 
 export interface MCPTool {
   name: string;
@@ -376,7 +380,10 @@ export class PremiereProTools {
           model: z.string().optional().describe('Whisper model size: tiny/base/small/medium/large-v3. Default "base" (fast). Use "small"/"medium" for higher accuracy.'),
           language: z.string().optional().describe('Language code (e.g. "ko", "en") or "auto" to detect. Default "ko".'),
           similarityThreshold: z.number().optional().describe('0..1 text-match to treat two takes as duplicates. Default 0.75. Lower catches looser repeats; higher only near-identical.'),
-          minGapSec: z.number().optional().describe('Silence gap (seconds) between words to flag as trimmable. Default 0.6.')
+          minGapSec: z.number().optional().describe('Silence gap (seconds) between words to flag as trimmable. Default 0.6.'),
+          paddingSec: z.number().optional().describe('Silence (seconds) kept at each end of a trimmed gap so the cut keeps its breath. Default 0.15. Set 0 to close gaps completely.'),
+          removeFillers: z.boolean().optional().describe('Also flag filler words ("음", "uh", "um") for removal. Default false.'),
+          fillerWords: z.array(z.string()).optional().describe(`Filler tokens to cut. Defaults to the unambiguous set: ${DEFAULT_FILLERS.join(', ')}. Korean single syllables like "그"/"뭐"/"이제" are excluded by default because they are also ordinary words — add them only when you know the take.`)
         })
       },
       {
@@ -392,14 +399,45 @@ export class PremiereProTools {
         })
       },
       {
+        name: 'export_captions',
+        description: 'Transcribes a media file and writes a subtitle file (SRT / WebVTT / timestamped text). Whisper segments are re-cut into readable cues that respect per-line character limits and min/max on-screen duration, using word timestamps so the timings stay true to the audio. Give scriptPath to proofread against the original narration first — misrecognitions are corrected against the script before the captions are written, which is the fix for names and jargon Whisper mishears. Reuses the cached transcript, so calling this after analyze_speech_edit_points on the same file costs no extra transcription time.',
+        inputSchema: z.object({
+          filePath: z.string().describe('Absolute path to the media file to transcribe.'),
+          outputPath: z.string().optional().describe('Where to write the subtitle file. Defaults to the media file path with the format extension.'),
+          format: z.enum(['srt', 'vtt', 'txt']).optional().describe('srt (default), vtt, or txt ("(M:SS) text" per line, easy to skim next to a script).'),
+          scriptPath: z.string().optional().describe('Optional reference script/narration file. When given, segments are corrected against it before captions are built. Markdown and timecode markers are stripped automatically.'),
+          model: z.string().optional().describe('Whisper model size. Default "base". Use "small"/"medium" for higher accuracy.'),
+          language: z.string().optional().describe('Language code (e.g. "ko", "en") or "auto". Default "ko".'),
+          maxCharsPerLine: z.number().optional().describe('Character limit per displayed line. Default 20.'),
+          maxLines: z.number().optional().describe('Lines per cue. Default 2.'),
+          maxDurationSec: z.number().optional().describe('A cue is split once it would run longer than this. Default 6.'),
+          minDurationSec: z.number().optional().describe('Shortest time a cue stays on screen. Default 1.'),
+          correctionThreshold: z.number().optional().describe('Minimum similarity to accept a script line as a correction. Default 0.6.')
+        })
+      },
+      {
+        name: 'find_speech_spans',
+        description: 'Finds where a phrase was spoken in a media file and returns the time spans, so you can cut by WHAT WAS SAID instead of hunting for a timecode. Matching is fuzzy, so the delivery does not have to match the wording exactly. Feed the returned spans straight to apply_timeline_removals with sourceTimes=true to delete those moments. Times are source-clip seconds. Reuses the cached transcript.',
+        inputSchema: z.object({
+          filePath: z.string().describe('Absolute path to the media file to search.'),
+          query: z.string().describe('The phrase to find, as it was spoken.'),
+          threshold: z.number().optional().describe('0..1 minimum match strength. Default 0.7. Lower finds looser paraphrases; higher demands near-exact wording.'),
+          paddingSec: z.number().optional().describe('Seconds added to each end of the returned span. Default 0.05.'),
+          model: z.string().optional().describe('Whisper model size. Default "base".'),
+          language: z.string().optional().describe('Language code or "auto". Default "ko".')
+        })
+      },
+      {
         name: 'apply_timeline_removals',
-        description: 'Removes a list of time spans from the timeline in one pass: razors at each span boundary and ripple-deletes the clips inside. Feed it the suggestedRemovals from analyze_audio_edit_points / analyze_speech_edit_points to auto-cut silences and duplicate takes. Spans are timeline seconds and are processed right-to-left so earlier timecodes stay valid. Use dryRun to preview the plan before executing.',
+        description: 'Removes a list of time spans from the timeline in one pass: razors at each span boundary and ripple-deletes the clips inside. Feed it the suggestedRemovals from analyze_audio_edit_points / analyze_speech_edit_points. IMPORTANT: those analyzers report SOURCE-clip times, so pass sourceTimes=true together with sourceMediaPath (the same file you analyzed) and the spans are converted to timeline times automatically. Without that they are read as raw timeline seconds, which is only correct when the clip starts at 00:00 and is untrimmed. Spans are processed right-to-left so earlier timecodes stay valid. Use dryRun to preview the plan before executing.',
         inputSchema: z.object({
           sequenceId: z.string().optional().describe('Optional sequence ID. Defaults to the active sequence.'),
           removals: z.array(z.object({
-            start: z.number().describe('Span start in timeline seconds.'),
-            end: z.number().describe('Span end in timeline seconds.')
-          })).describe('Time spans (timeline seconds) to remove.'),
+            start: z.number().describe('Span start in seconds (timeline time, or source-clip time when sourceTimes=true).'),
+            end: z.number().describe('Span end in seconds (timeline time, or source-clip time when sourceTimes=true).')
+          })).describe('Time spans to remove.'),
+          sourceTimes: z.boolean().optional().describe('Set true when the spans came from analyze_audio_edit_points / analyze_speech_edit_points (source-clip time). Requires sourceMediaPath. Spans are mapped onto every timeline clip that uses that media, honoring clip start and trim. Default false.'),
+          sourceMediaPath: z.string().optional().describe('Absolute path of the analyzed media file. Required when sourceTimes=true — used to locate the timeline clips that reference it.'),
           videoTrackIndices: z.array(z.number().int().min(0)).optional().describe('Video track indices to cut. Defaults to all video tracks.'),
           audioTrackIndices: z.array(z.number().int().min(0)).optional().describe('Audio track indices to cut. Defaults to all audio tracks.'),
           rippleDelete: z.boolean().optional().describe('Ripple-delete (close the gap) vs lift (leave gap). Default true.'),
@@ -1267,11 +1305,15 @@ export class PremiereProTools {
         case 'analyze_audio_edit_points':
           return await this.analyzeAudioEditPoints(args.filePath, args.noiseThresholdDb, args.minSilenceSec, args.paddingSec);
         case 'analyze_speech_edit_points':
-          return await this.analyzeSpeechEditPoints(args.filePath, args.model, args.language, args.similarityThreshold, args.minGapSec);
+          return await this.analyzeSpeechEditPoints(args.filePath, args.model, args.language, args.similarityThreshold, args.minGapSec, args.paddingSec, args.removeFillers, args.fillerWords);
         case 'proofread_transcript':
           return await this.proofreadTranscript(args.filePath, args.scriptPath, args.model, args.language, args.confidenceThreshold, args.correctionThreshold);
+        case 'export_captions':
+          return await this.exportCaptions(args.filePath, args.outputPath, args.format, args.scriptPath, args.model, args.language, args.maxCharsPerLine, args.maxLines, args.maxDurationSec, args.minDurationSec, args.correctionThreshold);
+        case 'find_speech_spans':
+          return await this.findSpeechSpans(args.filePath, args.query, args.threshold, args.paddingSec, args.model, args.language);
         case 'apply_timeline_removals':
-          return await this.applyTimelineRemovals(args.sequenceId, args.removals, args.videoTrackIndices, args.audioTrackIndices, args.rippleDelete, args.dryRun);
+          return await this.applyTimelineRemovals(args.sequenceId, args.removals, args.videoTrackIndices, args.audioTrackIndices, args.rippleDelete, args.dryRun, args.sourceTimes, args.sourceMediaPath);
 
         // Effects and Transitions
         case 'apply_effect':
@@ -2873,6 +2915,9 @@ export class PremiereProTools {
     language?: string,
     similarityThreshold?: number,
     minGapSec?: number,
+    paddingSec?: number,
+    removeFillers?: boolean,
+    fillerWords?: string[],
   ): Promise<any> {
     if (!filePath) {
       return JSON.stringify({ success: false, error: 'filePath is required' });
@@ -2884,6 +2929,9 @@ export class PremiereProTools {
         language ?? 'ko',
         similarityThreshold ?? 0.75,
         minGapSec ?? 0.6,
+        paddingSec ?? 0.15,
+        removeFillers ?? false,
+        fillerWords && fillerWords.length ? fillerWords : DEFAULT_FILLERS,
       );
       return JSON.stringify(analysis);
     } catch (e: any) {
@@ -2917,6 +2965,137 @@ export class PremiereProTools {
     }
   }
 
+  private async exportCaptions(
+    filePath?: string,
+    outputPath?: string,
+    format?: 'srt' | 'vtt' | 'txt',
+    scriptPath?: string,
+    model?: string,
+    language?: string,
+    maxCharsPerLine?: number,
+    maxLines?: number,
+    maxDurationSec?: number,
+    minDurationSec?: number,
+    correctionThreshold?: number,
+  ): Promise<any> {
+    if (!filePath) {
+      return JSON.stringify({ success: false, error: 'filePath is required' });
+    }
+    const fmt = format ?? 'srt';
+
+    try {
+      let segments;
+      let language_;
+      let corrections: any[] = [];
+      let correctedSegments = 0;
+
+      if (scriptPath) {
+        // Proofread first: the script is ground truth, so names and jargon are
+        // fixed before they ever reach a cue.
+        const pr = await proofreadTranscript(
+          filePath,
+          scriptPath,
+          model ?? 'base',
+          language ?? 'ko',
+          0.6,
+          correctionThreshold ?? 0.6,
+        );
+        if (!pr.success) {
+          return JSON.stringify({ success: false, error: pr.error || 'proofreading failed' });
+        }
+        language_ = pr.language;
+        corrections = pr.corrections.filter((c) => c.applied);
+
+        // Apply the accepted corrections onto the segments. A corrected segment
+        // loses its word timings (the new words never had any), so caption
+        // splitting falls back to segment-level timing for those.
+        const bySegment = new Map<number, string>();
+        for (const c of corrections) bySegment.set(c.segmentIndex, c.suggested);
+        segments = pr.segments.map((seg, i) => {
+          const fixed = bySegment.get(i);
+          if (fixed === undefined) return seg;
+          correctedSegments++;
+          return { start: seg.start, end: seg.end, text: fixed };
+        });
+      } else {
+        const tr = await transcribeAudio(filePath, model ?? 'base', language ?? 'ko');
+        if (!tr.success) {
+          return JSON.stringify({ success: false, error: tr.error || 'transcription failed' });
+        }
+        segments = tr.segments;
+        language_ = tr.language;
+      }
+
+      const cues = buildCues(segments, {
+        maxCharsPerLine: maxCharsPerLine ?? 20,
+        maxLines: maxLines ?? 2,
+        maxDurationSec: maxDurationSec ?? 6,
+        minDurationSec: minDurationSec ?? 1,
+      });
+      if (cues.length === 0) {
+        return JSON.stringify({ success: false, error: 'no speech found to caption' });
+      }
+
+      const body = serializeCues(cues, fmt);
+      const target = outputPath || filePath.replace(/\.[^.\/\\]+$/, '') + '.' + fmt;
+      writeFileSync(target, body, 'utf8');
+
+      const last = cues[cues.length - 1]!;
+      return JSON.stringify({
+        success: true,
+        outputPath: target,
+        format: fmt,
+        language: language_,
+        cueCount: cues.length,
+        durationSec: last.end,
+        usedScript: Boolean(scriptPath),
+        correctedSegmentCount: correctedSegments,
+        corrections: corrections.slice(0, 25).map((c) => ({ heard: c.heard, corrected: c.suggested, similarity: c.similarity })),
+        correctionsTruncated: corrections.length > 25,
+        preview: cues.slice(0, 5).map((c) => ({ start: c.start, end: c.end, text: c.text })),
+      });
+    } catch (e: any) {
+      return JSON.stringify({ success: false, error: `caption export failed: ${e?.message || e}` });
+    }
+  }
+
+  private async findSpeechSpans(
+    filePath?: string,
+    query?: string,
+    threshold?: number,
+    paddingSec?: number,
+    model?: string,
+    language?: string,
+  ): Promise<any> {
+    if (!filePath) return JSON.stringify({ success: false, error: 'filePath is required' });
+    if (!query) return JSON.stringify({ success: false, error: 'query is required' });
+
+    try {
+      const tr = await transcribeAudio(filePath, model ?? 'base', language ?? 'ko');
+      if (!tr.success) {
+        return JSON.stringify({ success: false, error: tr.error || 'transcription failed' });
+      }
+
+      const matches = findTextSpans(tr.segments, query, threshold ?? 0.7, paddingSec ?? 0.05);
+      return JSON.stringify({
+        success: true,
+        file: filePath,
+        query,
+        threshold: threshold ?? 0.7,
+        cached: Boolean(tr.cached),
+        matchCount: matches.length,
+        matches,
+        // Ready to hand to apply_timeline_removals as-is.
+        spans: matches.map((m) => ({ start: m.start, end: m.end })),
+        hint: matches.length
+          ? 'Pass spans to apply_timeline_removals with sourceTimes=true and sourceMediaPath set to this file. Use dryRun first.'
+          : 'No match. Lower threshold, or check the phrase against the transcript from export_captions.',
+      });
+    } catch (e: any) {
+      return JSON.stringify({ success: false, error: `speech search failed: ${e?.message || e}` });
+    }
+  }
+
   private async applyTimelineRemovals(
     sequenceId?: string,
     removals?: Array<{ start: number; end: number }>,
@@ -2924,6 +3103,8 @@ export class PremiereProTools {
     audioTrackIndices?: number[],
     rippleDelete = true,
     dryRun = false,
+    sourceTimes = false,
+    sourceMediaPath?: string,
   ): Promise<any> {
     const spans = (removals ?? [])
       .filter((s) => s && typeof s.start === 'number' && typeof s.end === 'number' && s.end > s.start)
@@ -2933,6 +3114,13 @@ export class PremiereProTools {
 
     if (spans.length === 0) {
       return JSON.stringify({ success: false, error: 'no valid removal spans provided' });
+    }
+
+    if (sourceTimes && !sourceMediaPath) {
+      return JSON.stringify({
+        success: false,
+        error: 'sourceTimes=true requires sourceMediaPath (the media file that was analyzed) so source-clip times can be mapped onto the timeline',
+      });
     }
 
     const script = `
@@ -2968,58 +3156,235 @@ export class PremiereProTools {
         var spans = ${JSON.stringify(spans)};
         var isRipple = ${rippleDelete ? 'true' : 'false'};
         var dryRun = ${dryRun ? 'true' : 'false'};
+        var sourceTimes = ${sourceTimes ? 'true' : 'false'};
+        var sourceMediaPath = ${JSON.stringify(sourceMediaPath ?? '')};
         var finalVideo = buildIndices(activeSequence.videoTracks.numTracks, ${JSON.stringify(videoTrackIndices ?? [])});
         var finalAudio = buildIndices(activeSequence.audioTracks.numTracks, ${JSON.stringify(audioTrackIndices ?? [])});
+        var eps = 0.5 / fps;
+
+        // ---- track handles -------------------------------------------------
+        // Only non-empty tracks take part. An empty track can never match the
+        // others' removed duration, which would make the sync check meaningless.
+        var targets = [];
+        for (var v = 0; v < finalVideo.length; v++) {
+          var vi = finalVideo[v];
+          if (vi < 0 || vi >= activeSequence.videoTracks.numTracks) continue;
+          if (activeSequence.videoTracks[vi].clips.numItems === 0) continue;
+          targets.push({ kind: "video", index: vi, dom: activeSequence.videoTracks[vi] });
+        }
+        for (var a = 0; a < finalAudio.length; a++) {
+          var ai = finalAudio[a];
+          if (ai < 0 || ai >= activeSequence.audioTracks.numTracks) continue;
+          if (activeSequence.audioTracks[ai].clips.numItems === 0) continue;
+          targets.push({ kind: "audio", index: ai, dom: activeSequence.audioTracks[ai] });
+        }
+        if (targets.length === 0) return JSON.stringify({ success: false, error: "no non-empty target tracks" });
+
+        // ---- source-clip time -> timeline time ------------------------------
+        // The analyzers measure time inside the source file. A timeline clip may
+        // start anywhere and be trimmed, so each source span is intersected with
+        // every clip that uses that media and shifted by (clipStart - clipIn).
+        function normPath(p) { return String(p).replace(/\\\\/g, "/").toLowerCase(); }
+
+        function collectSourceClips() {
+          var found = [];
+          var want = normPath(sourceMediaPath);
+          for (var t = 0; t < targets.length; t++) {
+            var track = targets[t].dom;
+            for (var c = 0; c < track.clips.numItems; c++) {
+              var clip = track.clips[c];
+              var mp = "";
+              try { mp = clip.projectItem ? clip.projectItem.getMediaPath() : ""; } catch (e) { mp = ""; }
+              if (!mp || normPath(mp) !== want) continue;
+              found.push({
+                tStart: clip.start.seconds,
+                sIn: clip.inPoint.seconds,
+                sOut: clip.outPoint.seconds
+              });
+            }
+          }
+          return found;
+        }
+
+        var mappedFromSource = 0;
+        if (sourceTimes) {
+          var srcClips = collectSourceClips();
+          if (srcClips.length === 0) {
+            return JSON.stringify({ success: false, error: "no timeline clip references sourceMediaPath: " + sourceMediaPath });
+          }
+          var mapped = [];
+          for (var i = 0; i < spans.length; i++) {
+            for (var c2 = 0; c2 < srcClips.length; c2++) {
+              var cl = srcClips[c2];
+              var s0 = Math.max(spans[i].start, cl.sIn);
+              var e0 = Math.min(spans[i].end, cl.sOut);
+              if (e0 - s0 <= eps) continue;
+              mapped.push({ start: cl.tStart + (s0 - cl.sIn), end: cl.tStart + (e0 - cl.sIn) });
+            }
+          }
+          if (mapped.length === 0) {
+            return JSON.stringify({ success: false, error: "none of the source spans fall inside the trimmed range of any timeline clip" });
+          }
+          mappedFromSource = srcClips.length;
+          spans = mapped;
+        }
+
+        // Normalize: merge overlaps, then order right-to-left so that removing a
+        // later span never invalidates an earlier span's timecodes.
+        spans.sort(function (x, y) { return x.start - y.start; });
+        var merged = [];
+        for (var m = 0; m < spans.length; m++) {
+          var last = merged.length ? merged[merged.length - 1] : null;
+          if (last && spans[m].start <= last.end + eps) {
+            if (spans[m].end > last.end) last.end = spans[m].end;
+          } else {
+            merged.push({ start: spans[m].start, end: spans[m].end });
+          }
+        }
+        merged.sort(function (x, y) { return y.start - x.start; });
+        spans = merged;
+
+        // ---- A/V sync pre-flight -------------------------------------------
+        // A ripple delete only pulls up the track it ran on. If one track has
+        // content across the span and another does not, the tracks end up
+        // shifted by different amounts and audio drifts off the picture. So
+        // measure coverage per track first and refuse the uneven spans.
+        function coverage(track, span) {
+          var cov = 0;
+          for (var c = 0; c < track.clips.numItems; c++) {
+            var clip = track.clips[c];
+            if (clip.end.seconds <= span.start) continue;
+            if (clip.start.seconds >= span.end) break;
+            var s1 = Math.max(clip.start.seconds, span.start);
+            var e1 = Math.min(clip.end.seconds, span.end);
+            if (e1 > s1) cov += e1 - s1;
+          }
+          return cov;
+        }
+
+        var applySpans = [];
+        var skipped = [];
+        for (var i2 = 0; i2 < spans.length; i2++) {
+          var span = spans[i2];
+          if (!isRipple) { applySpans.push(span); continue; }
+          var minCov = -1, maxCov = -1, worst = "";
+          for (var t2 = 0; t2 < targets.length; t2++) {
+            var cov = coverage(targets[t2].dom, span);
+            if (minCov < 0 || cov < minCov) { minCov = cov; worst = targets[t2].kind + targets[t2].index; }
+            if (cov > maxCov) maxCov = cov;
+          }
+          if (maxCov - minCov > eps) {
+            skipped.push({
+              start: span.start, end: span.end,
+              startTc: toTc(span.start), endTc: toTc(span.end),
+              reason: "uneven track coverage (" + Math.round(minCov * 1000) / 1000 + "s on " + worst + " vs " + Math.round(maxCov * 1000) / 1000 + "s) - ripple would desync audio from video",
+              thinnestTrack: worst
+            });
+            continue;
+          }
+          applySpans.push(span);
+        }
 
         var plan = [];
-        for (var s = 0; s < spans.length; s++) {
-          plan.push({ start: spans[s].start, end: spans[s].end, startTc: toTc(spans[s].start), endTc: toTc(spans[s].end) });
+        for (var p = 0; p < applySpans.length; p++) {
+          plan.push({ start: applySpans[p].start, end: applySpans[p].end, startTc: toTc(applySpans[p].start), endTc: toTc(applySpans[p].end) });
         }
+
+        var trackLabels = [];
+        for (var t3 = 0; t3 < targets.length; t3++) trackLabels.push(targets[t3].kind + targets[t3].index);
+
         if (dryRun) {
-          return JSON.stringify({ success: true, dryRun: true, sequenceId: activeSequence.sequenceID, fps: fps, spanCount: spans.length, videoTracks: finalVideo, audioTracks: finalAudio, plan: plan });
+          return JSON.stringify({
+            success: true, dryRun: true,
+            sequenceId: activeSequence.sequenceID, fps: fps,
+            sourceTimes: sourceTimes, sourceClipsMatched: mappedFromSource,
+            spanCount: applySpans.length, skippedCount: skipped.length,
+            tracks: trackLabels, plan: plan, skipped: skipped
+          });
+        }
+
+        if (applySpans.length === 0) {
+          return JSON.stringify({ success: false, error: "every span was rejected by the A/V sync check", skipped: skipped });
         }
 
         var qeSeq = qe.project.getActiveSequence();
         if (!qeSeq) return JSON.stringify({ success: false, error: "QE active sequence unavailable" });
-        var eps = 0.5 / fps;
+
+        // ---- razor pass -----------------------------------------------------
+        // One razor per unique boundary per track. Previously each span rescanned
+        // every clip on every track, so cost grew with spans x tracks x clips;
+        // 200+ silence cuts made that crawl. Now: cut everything, then sweep each
+        // track's clip list exactly once.
+        var qeTracks = [];
+        for (var t4 = 0; t4 < targets.length; t4++) {
+          qeTracks.push(targets[t4].kind === "video" ? qeSeq.getVideoTrackAt(targets[t4].index) : qeSeq.getAudioTrackAt(targets[t4].index));
+        }
+
+        var razorCount = 0;
+        for (var t5 = 0; t5 < targets.length; t5++) {
+          var qt = qeTracks[t5];
+          if (!qt) continue;
+          for (var s2 = 0; s2 < applySpans.length; s2++) {
+            qt.razor(toTc(applySpans[s2].end));
+            qt.razor(toTc(applySpans[s2].start));
+            razorCount += 2;
+          }
+        }
+
+        // ---- delete pass ----------------------------------------------------
         var removedCount = 0;
-
-        function processTrack(domTrack, qeTrack, span) {
-          if (!qeTrack) return;
-          qeTrack.razor(toTc(span.end));
-          qeTrack.razor(toTc(span.start));
-          for (var c = domTrack.clips.numItems - 1; c >= 0; c--) {
-            var clip = domTrack.clips[c];
-            if (clip.start.seconds >= span.start - eps && clip.end.seconds <= span.end + eps) {
-              clip.remove(isRipple, true);
-              removedCount++;
-            }
+        var removedPerTrack = {};
+        function inAnySpan(clip) {
+          for (var s3 = 0; s3 < applySpans.length; s3++) {
+            if (clip.start.seconds >= applySpans[s3].start - eps && clip.end.seconds <= applySpans[s3].end + eps) return true;
           }
+          return false;
         }
 
-        for (var i = 0; i < spans.length; i++) {
-          var span = spans[i];
-          for (var v = 0; v < finalVideo.length; v++) {
-            var vi = finalVideo[v];
-            if (vi < 0 || vi >= activeSequence.videoTracks.numTracks) continue;
-            processTrack(activeSequence.videoTracks[vi], qeSeq.getVideoTrackAt(vi), span);
+        for (var t6 = 0; t6 < targets.length; t6++) {
+          var domTrack = targets[t6].dom;
+          var label = targets[t6].kind + targets[t6].index;
+          var removedSec = 0;
+          // Reverse sweep: removing a clip with ripple only shifts what follows,
+          // so indices at or below the current one stay valid.
+          for (var c3 = domTrack.clips.numItems - 1; c3 >= 0; c3--) {
+            var clip2 = domTrack.clips[c3];
+            if (!inAnySpan(clip2)) continue;
+            removedSec += clip2.end.seconds - clip2.start.seconds;
+            clip2.remove(isRipple, true);
+            removedCount++;
           }
-          for (var a = 0; a < finalAudio.length; a++) {
-            var ai = finalAudio[a];
-            if (ai < 0 || ai >= activeSequence.audioTracks.numTracks) continue;
-            processTrack(activeSequence.audioTracks[ai], qeSeq.getAudioTrackAt(ai), span);
-          }
+          removedPerTrack[label] = Math.round(removedSec * 1000) / 1000;
         }
+
+        // ---- post-flight sync verification ----------------------------------
+        var durations = [];
+        for (var k in removedPerTrack) { if (removedPerTrack.hasOwnProperty(k)) durations.push(removedPerTrack[k]); }
+        var dMin = durations.length ? durations[0] : 0, dMax = durations.length ? durations[0] : 0;
+        for (var d = 1; d < durations.length; d++) {
+          if (durations[d] < dMin) dMin = durations[d];
+          if (durations[d] > dMax) dMax = durations[d];
+        }
+        var inSync = !isRipple || (dMax - dMin) <= eps;
 
         return JSON.stringify({
           success: true,
           dryRun: false,
-          message: "Applied " + spans.length + " removals, removed " + removedCount + " clip segments",
+          message: "Applied " + applySpans.length + " removals, removed " + removedCount + " clip segments" + (skipped.length ? " (" + skipped.length + " span(s) skipped by the sync check)" : ""),
           sequenceId: activeSequence.sequenceID,
           sequenceName: activeSequence.name,
-          spanCount: spans.length,
+          sourceTimes: sourceTimes,
+          sourceClipsMatched: mappedFromSource,
+          spanCount: applySpans.length,
+          skippedCount: skipped.length,
           removedClipCount: removedCount,
+          razorCount: razorCount,
           rippleDelete: isRipple,
+          tracks: trackLabels,
+          removedSecPerTrack: removedPerTrack,
+          inSync: inSync,
+          syncWarning: inSync ? null : "tracks lost different amounts of time (" + dMin + "s..." + dMax + "s) - check A/V alignment and undo if wrong",
+          skipped: skipped,
           plan: plan
         });
       } catch (e) {

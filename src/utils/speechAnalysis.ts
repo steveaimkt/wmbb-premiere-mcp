@@ -15,6 +15,7 @@
 
 import { existsSync } from 'fs';
 import { transcribeAudio, WhisperWord, WhisperSegment } from './whisperRunner.js';
+import { findFillerWords, FillerHit, DEFAULT_FILLERS } from './cutEditing.js';
 
 export type { WhisperWord, WhisperSegment };
 
@@ -48,10 +49,13 @@ export interface SpeechEditAnalysis {
     model: string;
     similarityThreshold: number;
     minGapSec: number;
+    paddingSec: number;
+    removeFillers: boolean;
   };
   segments: WhisperSegment[];
   duplicateTakes: DuplicateTake[];
   silenceGaps: SilenceGap[];
+  fillerWords: FillerHit[];
   /** Union of duplicate-take spans and silence gaps, sorted — the recommended
    *  regions to cut out. */
   suggestedRemovals: Span[];
@@ -61,6 +65,7 @@ export interface SpeechEditAnalysis {
     segmentCount: number;
     duplicateCount: number;
     silenceGapCount: number;
+    fillerCount: number;
     totalRemovableSec: number;
   };
   error?: string;
@@ -143,8 +148,14 @@ function findDuplicateTakes(
   return duplicates;
 }
 
-/** Gaps between consecutive words longer than minGapSec = silence to trim. */
-function findSilenceGaps(segments: WhisperSegment[], minGapSec: number): SilenceGap[] {
+/** Gaps between consecutive words longer than minGapSec = silence to trim.
+ *
+ *  `padding` seconds are left in place at each end of the gap. Removing the
+ *  whole gap butts the words straight against each other, which strips out the
+ *  breath and makes the edit sound rushed — the same reason the ffmpeg analyzer
+ *  keeps padding around its speech segments. A gap that is not longer than the
+ *  padding it would keep is left alone entirely. */
+function findSilenceGaps(segments: WhisperSegment[], minGapSec: number, padding: number): SilenceGap[] {
   const words: WhisperWord[] = [];
   for (const seg of segments) {
     if (seg.words && seg.words.length) words.push(...seg.words);
@@ -155,14 +166,18 @@ function findSilenceGaps(segments: WhisperSegment[], minGapSec: number): Silence
     const cur = words[i];
     if (!prev || !cur) continue;
     const gap = cur.start - prev.end;
-    if (gap >= minGapSec) {
-      gaps.push({
-        start: round(prev.end),
-        end: round(cur.start),
-        duration: round(gap),
-        afterText: prev.word,
-      });
-    }
+    if (gap < minGapSec) continue;
+
+    const start = prev.end + padding;
+    const end = cur.start - padding;
+    if (end - start <= 0.01) continue; // nothing left worth cutting
+
+    gaps.push({
+      start: round(start),
+      end: round(end),
+      duration: round(end - start),
+      afterText: prev.word,
+    });
   }
   return gaps;
 }
@@ -193,6 +208,11 @@ function mergeSpans(spans: Span[]): Span[] {
  * @param language            Language code, or 'auto'. Default 'ko'.
  * @param similarityThreshold 0..1 text match to call two takes duplicates. Default 0.75.
  * @param minGapSec           Silence gap (s) between words to flag. Default 0.6.
+ * @param paddingSec          Silence (s) kept at each end of a trimmed gap so the
+ *                            edit keeps its breath. Default 0.15.
+ * @param removeFillers       Also cut filler words ("음", "uh"). Default false.
+ * @param fillerList          Filler tokens. Defaults to DEFAULT_FILLERS (only the
+ *                            unambiguous ones — see cutEditing.ts).
  */
 export async function analyzeSpeechEditPoints(
   file: string,
@@ -200,18 +220,22 @@ export async function analyzeSpeechEditPoints(
   language = 'ko',
   similarityThreshold = 0.75,
   minGapSec = 0.6,
+  paddingSec = 0.15,
+  removeFillers = false,
+  fillerList: string[] = DEFAULT_FILLERS,
 ): Promise<SpeechEditAnalysis> {
   const base: SpeechEditAnalysis = {
     success: false,
     file,
     duration: 0,
-    params: { model, similarityThreshold, minGapSec },
+    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers },
     segments: [],
     duplicateTakes: [],
     silenceGaps: [],
+    fillerWords: [],
     suggestedRemovals: [],
     cutPoints: [],
-    stats: { segmentCount: 0, duplicateCount: 0, silenceGapCount: 0, totalRemovableSec: 0 },
+    stats: { segmentCount: 0, duplicateCount: 0, silenceGapCount: 0, fillerCount: 0, totalRemovableSec: 0 },
   };
 
   if (!file) return { ...base, error: 'file path is required' };
@@ -231,11 +255,13 @@ export async function analyzeSpeechEditPoints(
   const duration = transcription.duration || (segments.length ? segments[segments.length - 1]!.end : 0);
 
   const duplicateTakes = findDuplicateTakes(segments, similarityThreshold, 2);
-  const silenceGaps = findSilenceGaps(segments, minGapSec);
+  const silenceGaps = findSilenceGaps(segments, minGapSec, paddingSec);
+  const fillers = removeFillers ? findFillerWords(segments, fillerList) : [];
 
   const removalSpans: Span[] = [
     ...duplicateTakes.map((d) => d.removeSpan),
     ...silenceGaps.map((g) => ({ start: g.start, end: g.end, duration: g.duration })),
+    ...fillers.map((f) => ({ start: f.start, end: f.end, duration: f.duration })),
   ];
   const suggestedRemovals = mergeSpans(removalSpans);
 
@@ -253,16 +279,18 @@ export async function analyzeSpeechEditPoints(
     file,
     language: transcription.language,
     duration: round(duration),
-    params: { model, similarityThreshold, minGapSec },
+    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers },
     segments,
     duplicateTakes,
     silenceGaps,
+    fillerWords: fillers,
     suggestedRemovals,
     cutPoints,
     stats: {
       segmentCount: segments.length,
       duplicateCount: duplicateTakes.length,
       silenceGapCount: silenceGaps.length,
+      fillerCount: fillers.length,
       totalRemovableSec,
     },
   };
