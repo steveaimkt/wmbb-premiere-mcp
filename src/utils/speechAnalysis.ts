@@ -16,14 +16,11 @@
 import { existsSync } from 'fs';
 import { transcribeAudio, WhisperWord, WhisperSegment } from './whisperRunner.js';
 import { findFillerWords, FillerHit, DEFAULT_FILLERS } from './cutEditing.js';
+import { findSilenceGaps, round, type Span, type SilenceGap } from './silenceGaps.js';
 
 export type { WhisperWord, WhisperSegment };
-
-export interface Span {
-  start: number;
-  end: number;
-  duration: number;
-}
+export type { Span, SilenceGap };
+export { findSilenceGaps };
 
 export interface DuplicateTake {
   /** The span to remove (the earlier, flubbed take). */
@@ -33,11 +30,6 @@ export interface DuplicateTake {
   similarity: number;
   removedText: string;
   keptText: string;
-}
-
-export interface SilenceGap extends Span {
-  /** Text just before the gap, for context. */
-  afterText?: string;
 }
 
 export interface SpeechEditAnalysis {
@@ -69,10 +61,6 @@ export interface SpeechEditAnalysis {
     totalRemovableSec: number;
   };
   error?: string;
-}
-
-function round(n: number): number {
-  return Math.round(n * 1000) / 1000;
 }
 
 /** Normalize Korean/English text for similarity: strip spaces, punctuation, lowercase. */
@@ -148,40 +136,6 @@ function findDuplicateTakes(
   return duplicates;
 }
 
-/** Gaps between consecutive words longer than minGapSec = silence to trim.
- *
- *  `padding` seconds are left in place at each end of the gap. Removing the
- *  whole gap butts the words straight against each other, which strips out the
- *  breath and makes the edit sound rushed — the same reason the ffmpeg analyzer
- *  keeps padding around its speech segments. A gap that is not longer than the
- *  padding it would keep is left alone entirely. */
-function findSilenceGaps(segments: WhisperSegment[], minGapSec: number, padding: number): SilenceGap[] {
-  const words: WhisperWord[] = [];
-  for (const seg of segments) {
-    if (seg.words && seg.words.length) words.push(...seg.words);
-  }
-  const gaps: SilenceGap[] = [];
-  for (let i = 1; i < words.length; i++) {
-    const prev = words[i - 1];
-    const cur = words[i];
-    if (!prev || !cur) continue;
-    const gap = cur.start - prev.end;
-    if (gap < minGapSec) continue;
-
-    const start = prev.end + padding;
-    const end = cur.start - padding;
-    if (end - start <= 0.01) continue; // nothing left worth cutting
-
-    gaps.push({
-      start: round(start),
-      end: round(end),
-      duration: round(end - start),
-      afterText: prev.word,
-    });
-  }
-  return gaps;
-}
-
 /** Merge overlapping spans into a clean sorted removal list. */
 function mergeSpans(spans: Span[]): Span[] {
   if (!spans.length) return [];
@@ -255,7 +209,7 @@ export async function analyzeSpeechEditPoints(
   const duration = transcription.duration || (segments.length ? segments[segments.length - 1]!.end : 0);
 
   const duplicateTakes = findDuplicateTakes(segments, similarityThreshold, 2);
-  const silenceGaps = findSilenceGaps(segments, minGapSec, paddingSec);
+  const silenceGaps = findSilenceGaps(segments, minGapSec, paddingSec, duration);
   const fillers = removeFillers ? findFillerWords(segments, fillerList) : [];
 
   const removalSpans: Span[] = [

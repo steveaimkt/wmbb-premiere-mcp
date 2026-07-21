@@ -22,6 +22,28 @@ export interface MCPTool {
   inputSchema: z.ZodSchema<any>;
 }
 
+/**
+ * Every Unicode spelling a filesystem path might take, so a path can be compared
+ * inside ExtendScript (which has no String.normalize).
+ *
+ * macOS stores filenames NFD-decomposed. A caller almost always supplies NFC —
+ * that is what typing, JSON, and copy-paste produce. For ASCII paths the two are
+ * identical, but "안티그래비티" in NFC and NFD differ byte for byte, so an exact
+ * string compare against getMediaPath() fails on any non-ASCII path.
+ */
+export function pathVariants(p: string): string[] {
+  if (!p) return [];
+  const seen = new Set<string>([p]);
+  for (const form of ['NFC', 'NFD'] as const) {
+    try {
+      seen.add(p.normalize(form));
+    } catch {
+      // A malformed string is not worth failing the whole call over.
+    }
+  }
+  return Array.from(seen);
+}
+
 
 
 
@@ -138,11 +160,12 @@ export class PremiereProTools {
       },
       {
         name: 'remove_from_timeline',
-        description: 'Removes a clip from the timeline. Pass sequenceId when the clip ID came from list_sequence_tracks for a non-active sequence.',
+        description: 'Removes a clip from the timeline. On a ripple delete the linked clip on the opposite track (audio for a video clip, video for an audio clip) is removed too, so the tracks stay aligned — pass removeLinked:false to take only the one clip. Pass sequenceId when the clip ID came from list_sequence_tracks for a non-active sequence.',
         inputSchema: z.object({
           clipId: z.string().describe('The ID of the clip on the timeline to remove'),
           sequenceId: z.string().optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
-          deleteMode: z.enum(['ripple', 'lift']).optional().describe('Whether to ripple delete (close gap) or lift (leave gap)')
+          deleteMode: z.enum(['ripple', 'lift']).optional().describe('Whether to ripple delete (close gap) or lift (leave gap)'),
+          removeLinked: z.boolean().optional().describe('Also remove the linked clip on the opposite track type so a ripple delete does not desync A/V. Default true. Only applies to ripple deletes.')
         })
       },
       {
@@ -616,7 +639,7 @@ export class PremiereProTools {
         case 'add_to_timeline':
           return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode, args.linkAudio);
         case 'remove_from_timeline':
-          return await this.removeFromTimeline(args.clipId, args.sequenceId, args.deleteMode);
+          return await this.removeFromTimeline(args.clipId, args.sequenceId, args.deleteMode, args.removeLinked);
         case 'move_clip':
           return await this.moveClip(args.clipId, args.newTime, args.newTrackIndex);
         case 'trim_clip':
@@ -1241,7 +1264,7 @@ export class PremiereProTools {
     }
   }
 
-  private async removeFromTimeline(clipId: string, sequenceId?: string, deleteMode = 'ripple'): Promise<any> {
+  private async removeFromTimeline(clipId: string, sequenceId?: string, deleteMode = 'ripple', removeLinked = true): Promise<any> {
     const script = `
       try {
         var info = __findClip(${JSON.stringify(clipId)}, ${sequenceId ? JSON.stringify(sequenceId) : 'null'});
@@ -1249,15 +1272,44 @@ export class PremiereProTools {
         var clip = info.clip;
         var clipName = clip.name;
         var isRipple = ${JSON.stringify(deleteMode)} === "ripple";
+        var alsoLinked = ${removeLinked ? 'true' : 'false'};
+
+        // A ripple delete pulls up only the track it ran on — clip.remove() does
+        // NOT take the linked audio/video partner with it. Removing just one side
+        // shifts that track and leaves the other where it was, so everything
+        // downstream drifts out of sync. Find the partner by matching span+name on
+        // the opposite track type and remove it in the same pass.
+        var partners = [];
+        if (alsoLinked && isRipple) {
+          var seq = info.sequence;
+          var cs = clip.start.seconds, ce = clip.end.seconds;
+          var tol = 0.002;
+          var pools = info.trackType === "video" ? seq.audioTracks : seq.videoTracks;
+          for (var pt = 0; pt < pools.numTracks; pt++) {
+            var ptrack = pools[pt];
+            for (var pc = 0; pc < ptrack.clips.numItems; pc++) {
+              var pclip = ptrack.clips[pc];
+              if (Math.abs(pclip.start.seconds - cs) > tol) continue;
+              if (Math.abs(pclip.end.seconds - ce) > tol) continue;
+              if (pclip.name !== clipName) continue;
+              partners.push(pclip);
+              break;
+            }
+          }
+        }
+
         clip.remove(isRipple, true);
+        for (var pr = 0; pr < partners.length; pr++) partners[pr].remove(isRipple, true);
+
         return JSON.stringify({
           success: true,
-          message: "Clip removed from timeline",
+          message: "Clip removed from timeline" + (partners.length ? " (with " + partners.length + " linked clip(s))" : ""),
           clipId: ${JSON.stringify(clipId)},
           clipName: clipName,
           sequenceId: info.sequenceId,
           sequenceName: info.sequenceName,
-          deleteMode: ${JSON.stringify(deleteMode)}
+          deleteMode: ${JSON.stringify(deleteMode)},
+          linkedRemoved: partners.length
         });
       } catch (e) {
         return JSON.stringify({
@@ -2090,6 +2142,12 @@ export class PremiereProTools {
         var dryRun = ${dryRun ? 'true' : 'false'};
         var sourceTimes = ${sourceTimes ? 'true' : 'false'};
         var sourceMediaPath = ${JSON.stringify(sourceMediaPath ?? '')};
+        // macOS stores filenames NFD-decomposed while callers usually hand us NFC
+        // (anything typed, or copied out of JSON). The two are byte-different, so
+        // a path with Korean/accented characters never matched and the call failed
+        // with "no timeline clip references sourceMediaPath". ExtendScript has no
+        // String.normalize, so the variants are precomputed on the Node side.
+        var sourceMediaPathVariants = ${JSON.stringify(pathVariants(sourceMediaPath ?? ''))};
         var finalVideo = buildIndices(activeSequence.videoTracks.numTracks, ${JSON.stringify(videoTrackIndices ?? [])});
         var finalAudio = buildIndices(activeSequence.audioTracks.numTracks, ${JSON.stringify(audioTrackIndices ?? [])});
         var eps = 0.5 / fps;
@@ -2118,16 +2176,23 @@ export class PremiereProTools {
         // every clip that uses that media and shifted by (clipStart - clipIn).
         function normPath(p) { return String(p).replace(/\\\\/g, "/").toLowerCase(); }
 
+        var wantList = [];
+        for (var wv = 0; wv < sourceMediaPathVariants.length; wv++) wantList.push(normPath(sourceMediaPathVariants[wv]));
+        function pathMatches(mp) {
+          var got = normPath(mp);
+          for (var w = 0; w < wantList.length; w++) if (got === wantList[w]) return true;
+          return false;
+        }
+
         function collectSourceClips() {
           var found = [];
-          var want = normPath(sourceMediaPath);
           for (var t = 0; t < targets.length; t++) {
             var track = targets[t].dom;
             for (var c = 0; c < track.clips.numItems; c++) {
               var clip = track.clips[c];
               var mp = "";
               try { mp = clip.projectItem ? clip.projectItem.getMediaPath() : ""; } catch (e) { mp = ""; }
-              if (!mp || normPath(mp) !== want) continue;
+              if (!mp || !pathMatches(mp)) continue;
               found.push({
                 tStart: clip.start.seconds,
                 sIn: clip.inPoint.seconds,
@@ -2266,9 +2331,18 @@ export class PremiereProTools {
         // ---- delete pass ----------------------------------------------------
         var removedCount = 0;
         var removedPerTrack = {};
+        // Match by MIDPOINT, not by containment. razor() lands on a frame
+        // boundary, so a segment cut for span [a,b] can start or end up to a
+        // full frame outside it. The old test (start >= a - eps && end <= b + eps,
+        // eps = half a frame) then rejected the very segment it had just cut, and
+        // the span was silently left on the timeline while the call still
+        // reported success. Because razors exist at every boundary, no clip can
+        // straddle one, so "midpoint inside the span" identifies exactly the
+        // segments to drop and is immune to frame rounding.
         function inAnySpan(clip) {
+          var mid = (clip.start.seconds + clip.end.seconds) / 2;
           for (var s3 = 0; s3 < applySpans.length; s3++) {
-            if (clip.start.seconds >= applySpans[s3].start - eps && clip.end.seconds <= applySpans[s3].end + eps) return true;
+            if (mid > applySpans[s3].start && mid < applySpans[s3].end) return true;
           }
           return false;
         }
@@ -2299,9 +2373,25 @@ export class PremiereProTools {
         }
         var inSync = !isRipple || (dMax - dMin) <= eps;
 
+        // ---- did we actually cut what we planned? ---------------------------
+        // Guard against the failure mode where razors land but the delete pass
+        // matches nothing: without this the call returns success while the
+        // timeline is untouched. Tolerance is one frame per span, since each
+        // razor may round by up to that much.
+        var plannedSec = 0;
+        for (var ps = 0; ps < applySpans.length; ps++) plannedSec += applySpans[ps].end - applySpans[ps].start;
+        plannedSec = Math.round(plannedSec * 1000) / 1000;
+        var appliedTol = (applySpans.length + 1) / fps;
+        var shortfall = Math.round((plannedSec - dMax) * 1000) / 1000;
+        var fullyApplied = Math.abs(shortfall) <= appliedTol;
+
         return JSON.stringify({
           success: true,
           dryRun: false,
+          plannedSec: plannedSec,
+          fullyApplied: fullyApplied,
+          shortfallSec: fullyApplied ? 0 : shortfall,
+          applyWarning: fullyApplied ? null : "removed " + dMax + "s but planned " + plannedSec + "s - " + shortfall + "s was NOT cut; re-check the timeline before continuing",
           message: "Applied " + applySpans.length + " removals, removed " + removedCount + " clip segments" + (skipped.length ? " (" + skipped.length + " span(s) skipped by the sync check)" : ""),
           sequenceId: activeSequence.sequenceID,
           sequenceName: activeSequence.name,

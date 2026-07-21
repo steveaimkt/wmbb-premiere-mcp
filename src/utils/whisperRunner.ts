@@ -17,7 +17,10 @@ import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// Not named __dirname: ts-jest compiles this module to CJS, where __dirname is
+// already defined, and redeclaring it throws SyntaxError at load time — which
+// silently took down every test suite that imported this file, directly or not.
+const moduleDir = dirname(fileURLToPath(import.meta.url));
 const PYTHON_BIN = process.env.PYTHON_PATH || 'python3';
 
 /** Whisper is the slowest step in the toolchain by a wide margin. Give it a
@@ -102,7 +105,7 @@ export interface Transcription {
 }
 
 function scriptPath(): string {
-  return join(__dirname, '..', '..', 'scripts', 'whisper_transcribe.py');
+  return join(moduleDir, '..', '..', 'scripts', 'whisper_transcribe.py');
 }
 
 /**
