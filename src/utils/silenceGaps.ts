@@ -16,9 +16,22 @@ export interface Span {
   duration: number;
 }
 
+/** Where a gap sits relative to the speech.
+ *
+ *  `head`/`tail` are the intro and outro margins — the material before the first
+ *  word and after the last one. They are NOT interchangeable with the pauses
+ *  between words: they are where a title card sits, or where the demo keeps
+ *  running after the narration stops. Cutting them is an editorial decision
+ *  about the top and tail of the piece, so they are reported but never
+ *  recommended. See EXCLUDED_GAP_KINDS in speechAnalysis.ts.
+ */
+export type GapKind = 'head' | 'inner' | 'tail';
+
 export interface SilenceGap extends Span {
   /** Text just before the gap, for context. */
   afterText?: string;
+  /** head = before the first word, tail = after the last, inner = between two. */
+  kind: GapKind;
 }
 
 export function round(n: number): number {
@@ -66,6 +79,7 @@ export function findSilenceGaps(
       end: round(first.start - padding),
       duration: round(first.start - padding),
       afterText: HEAD_MARKER,
+      kind: 'head',
     });
   }
 
@@ -85,6 +99,7 @@ export function findSilenceGaps(
       end: round(end),
       duration: round(end - start),
       afterText: prev.word,
+      kind: 'inner',
     });
   }
 
@@ -95,6 +110,7 @@ export function findSilenceGaps(
       end: round(duration),
       duration: round(duration - (last.end + padding)),
       afterText: last.word,
+      kind: 'tail',
     });
   }
 

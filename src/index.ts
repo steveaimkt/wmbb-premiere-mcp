@@ -47,7 +47,7 @@ class MCPPremiereProServer {
     this.logger = new Logger('MCPPremiereProServer');
     this.server = new Server(
       {
-        name: 'mcp-adobe-premiere-pro',
+        name: 'WMBB_Premiere_Pro_MCP',
         version: '1.0.0',
         description: 'Model Context Protocol tools for Adobe Premiere Pro - AI-powered video editing'
       },

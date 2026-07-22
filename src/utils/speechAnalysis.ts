@@ -16,10 +16,10 @@
 import { existsSync } from 'fs';
 import { transcribeAudio, WhisperWord, WhisperSegment } from './whisperRunner.js';
 import { findFillerWords, FillerHit, DEFAULT_FILLERS } from './cutEditing.js';
-import { findSilenceGaps, round, type Span, type SilenceGap } from './silenceGaps.js';
+import { findSilenceGaps, round, type Span, type SilenceGap, type GapKind } from './silenceGaps.js';
 
 export type { WhisperWord, WhisperSegment };
-export type { Span, SilenceGap };
+export type { Span, SilenceGap, GapKind };
 export { findSilenceGaps };
 
 export interface DuplicateTake {
@@ -30,6 +30,28 @@ export interface DuplicateTake {
   similarity: number;
   removedText: string;
   keptText: string;
+}
+
+/** One reviewable group of cut candidates.
+ *
+ *  The categories exist because these are not the same decision. Trimming a
+ *  0.9s pause between two sentences is housekeeping; dropping the intro title
+ *  card, or the 60 seconds where an install script runs on screen, changes what
+ *  the piece IS. Handing back one flat list invites an editor to approve all of
+ *  it at once, which is how a hook gets deleted. Each category carries its own
+ *  recommendation so the approval is per-group.
+ */
+export interface ProposalGroup {
+  /** Stable key for the category. */
+  kind: 'pauses' | 'duplicates' | 'intro' | 'outro' | 'longGaps' | 'fillers';
+  /** One line an editor can read without opening the spans. */
+  label: string;
+  spans: Span[];
+  totalSec: number;
+  /** Whether cutting this group is the safe default. */
+  recommended: boolean;
+  /** Why it is or is not recommended — surface this to the user verbatim. */
+  note: string;
 }
 
 export interface SpeechEditAnalysis {
@@ -43,22 +65,32 @@ export interface SpeechEditAnalysis {
     minGapSec: number;
     paddingSec: number;
     removeFillers: boolean;
+    longGapSec: number;
+    lookbackSec: number;
   };
   segments: WhisperSegment[];
   duplicateTakes: DuplicateTake[];
   silenceGaps: SilenceGap[];
   fillerWords: FillerHit[];
-  /** Union of duplicate-take spans and silence gaps, sorted — the recommended
-   *  regions to cut out. */
+  /** Cut candidates split into reviewable groups. This is the field to present
+   *  to a human; `suggestedRemovals` is only the recommended subset flattened. */
+  proposals: ProposalGroup[];
+  /** Union of the RECOMMENDED groups' spans, sorted and merged. Intro, outro and
+   *  long gaps are deliberately absent — see ProposalGroup. */
   suggestedRemovals: Span[];
   /** All razor times (span boundaries), sorted and de-duped. */
   cutPoints: number[];
+  /** Conditions the caller must not silently ignore (e.g. a suspect transcript). */
+  warnings: string[];
   stats: {
     segmentCount: number;
     duplicateCount: number;
     silenceGapCount: number;
     fillerCount: number;
+    /** Total of the recommended groups only. */
     totalRemovableSec: number;
+    /** Total across every group, recommended or not. */
+    totalProposedSec: number;
   };
   error?: string;
 }
@@ -100,11 +132,19 @@ function similarity(a: string, b: string): number {
 }
 
 /** Find repeated takes: a segment whose text closely matches a nearby earlier
- *  segment means the speaker restarted the line. Remove the earlier one. */
+ *  segment means the speaker restarted the line. Remove the earlier one.
+ *
+ *  The window is measured in SECONDS, not in segments. A segment count only
+ *  works for an immediate stumble ("키미 K2.0" → "키미 K2.7"). The other real
+ *  pattern is a take that breaks off mid-sentence, a long pause while the
+ *  speaker resets the screen, and the same lines delivered again twenty seconds
+ *  later — over a gap like that, the retake is still adjacent in segment terms
+ *  on one recording and six segments away on another. Time is the honest unit.
+ */
 function findDuplicateTakes(
   segments: WhisperSegment[],
   threshold: number,
-  lookback: number,
+  lookbackSec: number,
 ): DuplicateTake[] {
   const duplicates: DuplicateTake[] = [];
   const consumed = new Set<number>();
@@ -113,15 +153,25 @@ function findDuplicateTakes(
     if (consumed.has(i)) continue;
     const cur = segments[i];
     if (!cur) continue;
-    for (let j = i - 1; j >= Math.max(0, i - lookback); j--) {
+    for (let j = i - 1; j >= 0; j--) {
       if (consumed.has(j)) continue;
       const prev = segments[j];
       if (!prev) continue;
+      if (cur.start - prev.end > lookbackSec) break; // out of the window
       const sim = similarity(prev.text, cur.text);
       if (sim >= threshold) {
-        // prev = flubbed take (remove), cur = clean retake (keep)
+        // prev = flubbed take (remove), cur = clean retake (keep).
+        //
+        // The removal runs to the START of the retake, not to the end of the
+        // flub. Whatever sits between them is the speaker resetting — dead air,
+        // and on a screen recording sometimes twenty seconds of it. Cutting the
+        // flub but leaving its pause behind is the worst of both: the mistake is
+        // gone and the hole it left is still there. This is the one place a long
+        // silence is safe to take, because the same words bracket both sides of
+        // it, which is proof it is not a demo.
+        const removeEnd = Math.max(prev.end, Math.min(cur.start, prev.end + lookbackSec));
         duplicates.push({
-          removeSpan: { start: round(prev.start), end: round(prev.end), duration: round(prev.end - prev.start) },
+          removeSpan: { start: round(prev.start), end: round(removeEnd), duration: round(removeEnd - prev.start) },
           keepSpan: { start: round(cur.start), end: round(cur.end), duration: round(cur.end - cur.start) },
           similarity: round(sim),
           removedText: prev.text,
@@ -167,6 +217,12 @@ function mergeSpans(spans: Span[]): Span[] {
  * @param removeFillers       Also cut filler words ("음", "uh"). Default false.
  * @param fillerList          Filler tokens. Defaults to DEFAULT_FILLERS (only the
  *                            unambiguous ones — see cutEditing.ts).
+ * @param longGapSec          Gaps at or above this are their own category, kept
+ *                            out of the recommended cut because they are usually
+ *                            on-screen demos, not silence. Default 5.
+ * @param lookbackSec         Time window for matching a retake to its flubbed
+ *                            take. Default 25 — long enough to bridge a mid-take
+ *                            break and reset.
  */
 export async function analyzeSpeechEditPoints(
   file: string,
@@ -177,19 +233,23 @@ export async function analyzeSpeechEditPoints(
   paddingSec = 0.15,
   removeFillers = false,
   fillerList: string[] = DEFAULT_FILLERS,
+  longGapSec = 5,
+  lookbackSec = 25,
 ): Promise<SpeechEditAnalysis> {
   const base: SpeechEditAnalysis = {
     success: false,
     file,
     duration: 0,
-    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers },
+    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers, longGapSec, lookbackSec },
     segments: [],
     duplicateTakes: [],
     silenceGaps: [],
     fillerWords: [],
+    proposals: [],
     suggestedRemovals: [],
     cutPoints: [],
-    stats: { segmentCount: 0, duplicateCount: 0, silenceGapCount: 0, fillerCount: 0, totalRemovableSec: 0 },
+    warnings: [],
+    stats: { segmentCount: 0, duplicateCount: 0, silenceGapCount: 0, fillerCount: 0, totalRemovableSec: 0, totalProposedSec: 0 },
   };
 
   if (!file) return { ...base, error: 'file path is required' };
@@ -208,16 +268,90 @@ export async function analyzeSpeechEditPoints(
   const segments: WhisperSegment[] = transcription.segments;
   const duration = transcription.duration || (segments.length ? segments[segments.length - 1]!.end : 0);
 
-  const duplicateTakes = findDuplicateTakes(segments, similarityThreshold, 2);
+  const warnings: string[] = [];
+
+  // A transcript with a large unheard head is the signature of an
+  // under-powered model dropping the opening — the exact failure that once
+  // deleted a hook. Warn loudly rather than let the head gap read as silence.
+  const firstWord = segments.find((s) => s.words && s.words.length)?.words?.[0];
+  if (firstWord && firstWord.start > 8 && /^(tiny|base)$/i.test(model)) {
+    warnings.push(
+      `Model "${model}" transcribed nothing for the first ${round(firstWord.start)}s. ` +
+        `On a real recording that is usually the model missing the opening, not silence — ` +
+        `re-run with model "small" or higher before trusting the head gap.`,
+    );
+  }
+
+  const duplicateTakes = findDuplicateTakes(segments, similarityThreshold, lookbackSec);
   const silenceGaps = findSilenceGaps(segments, minGapSec, paddingSec, duration);
   const fillers = removeFillers ? findFillerWords(segments, fillerList) : [];
 
-  const removalSpans: Span[] = [
-    ...duplicateTakes.map((d) => d.removeSpan),
-    ...silenceGaps.map((g) => ({ start: g.start, end: g.end, duration: g.duration })),
-    ...fillers.map((f) => ({ start: f.start, end: f.end, duration: f.duration })),
-  ];
-  const suggestedRemovals = mergeSpans(removalSpans);
+  // Duplicate-take spans win any overlap with a plain gap, so a gap that sits
+  // inside a retake removal is not double-counted or re-proposed on its own.
+  const dupSpans = duplicateTakes.map((d) => d.removeSpan);
+  const coveredByDup = (g: SilenceGap) =>
+    dupSpans.some((d) => g.start >= d.start - 0.05 && g.end <= d.end + 0.05);
+
+  const innerGaps = silenceGaps.filter((g) => g.kind === 'inner' && !coveredByDup(g));
+  const pauseGaps = innerGaps.filter((g) => g.duration < longGapSec);
+  const longGaps = innerGaps.filter((g) => g.duration >= longGapSec);
+  const headGap = silenceGaps.find((g) => g.kind === 'head');
+  const tailGap = silenceGaps.find((g) => g.kind === 'tail');
+
+  const toSpan = (g: SilenceGap): Span => ({ start: g.start, end: g.end, duration: g.duration });
+  const sum = (spans: Span[]) => round(spans.reduce((a, s) => a + s.duration, 0));
+
+  const proposals: ProposalGroup[] = [];
+  if (dupSpans.length) {
+    proposals.push({
+      kind: 'duplicates', label: '반복/재테이크 (앞 테이크 + 그 뒤 데드에어)',
+      spans: dupSpans, totalSec: sum(dupSpans), recommended: true,
+      note: '같은 대사가 다시 나온 앞 테이크. 삭제 안전.',
+    });
+  }
+  if (pauseGaps.length) {
+    const spans = pauseGaps.map(toSpan);
+    proposals.push({
+      kind: 'pauses', label: `문장 사이 정적 (${minGapSec}~${longGapSec}초)`,
+      spans, totalSec: sum(spans), recommended: true,
+      note: '말과 말 사이 빈 구간. 앞뒤 호흡은 남김.',
+    });
+  }
+  if (removeFillers && fillers.length) {
+    const spans = fillers.map((f) => ({ start: f.start, end: f.end, duration: f.duration }));
+    proposals.push({
+      kind: 'fillers', label: '군더더기 말 (음/어/uh)',
+      spans, totalSec: sum(spans), recommended: true,
+      note: '명백한 필러만. 판단 애매한 한 음절은 제외됨.',
+    });
+  }
+  if (headGap) {
+    proposals.push({
+      kind: 'intro', label: '인트로 여백 (첫 대사 이전)',
+      spans: [toSpan(headGap)], totalSec: headGap.duration, recommended: false,
+      note: '타이틀 카드가 앉는 자리. 앞에 인트로 영상을 붙일 거면 남기는 게 맞다. 자를지는 편집 판단.',
+    });
+  }
+  if (tailGap) {
+    proposals.push({
+      kind: 'outro', label: '아웃트로 여백 (마지막 대사 이후)',
+      spans: [toSpan(tailGap)], totalSec: tailGap.duration, recommended: false,
+      note: '말이 끝난 뒤 화면이 도는 자리. 아웃트로를 붙일 거면 남긴다. 자를지는 편집 판단.',
+    });
+  }
+  if (longGaps.length) {
+    const spans = longGaps.map(toSpan);
+    proposals.push({
+      kind: 'longGaps', label: `긴 정적 (${longGapSec}초 이상)`,
+      spans, totalSec: sum(spans), recommended: false,
+      note: '대개 "실행해볼게요" 직후 화면 시연 구간. 자르면 데모가 사라진다. 배속 처리 검토 대상. 프레임 확인 후 개별 판단.',
+    });
+  }
+
+  // The recommended cut is only the groups flagged safe. Intro/outro/longGaps
+  // are present in `proposals` for the human, absent here on purpose.
+  const recommendedSpans = proposals.filter((p) => p.recommended).flatMap((p) => p.spans);
+  const suggestedRemovals = mergeSpans(recommendedSpans);
 
   const cutSet = new Set<number>();
   for (const span of suggestedRemovals) {
@@ -227,25 +361,29 @@ export async function analyzeSpeechEditPoints(
   const cutPoints = Array.from(cutSet).sort((a, b) => a - b);
 
   const totalRemovableSec = round(suggestedRemovals.reduce((acc, s) => acc + s.duration, 0));
+  const totalProposedSec = round(proposals.reduce((acc, p) => acc + p.totalSec, 0));
 
   return {
     success: true,
     file,
     language: transcription.language,
     duration: round(duration),
-    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers },
+    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers, longGapSec, lookbackSec },
     segments,
     duplicateTakes,
     silenceGaps,
     fillerWords: fillers,
+    proposals,
     suggestedRemovals,
     cutPoints,
+    warnings,
     stats: {
       segmentCount: segments.length,
       duplicateCount: duplicateTakes.length,
       silenceGapCount: silenceGaps.length,
       fillerCount: fillers.length,
       totalRemovableSec,
+      totalProposedSec,
     },
   };
 }

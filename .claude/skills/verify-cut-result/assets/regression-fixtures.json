@@ -1,0 +1,55 @@
+{
+  "_comment": "컷편집 회귀 재현 픽스처. 무편집 원본을 복제해 알려진 스팬셋을 적용하고 기대 길이가 나오는지 확인한다. 원본은 절대 편집하지 않는다. 도구 코드를 고친 뒤에는 반드시 이 픽스처로 재현 테스트를 돌린다.",
+  "fixtures": [
+    {
+      "id": "ripple-18spans-baseline",
+      "description": "포함관계→중점 기준 삭제 매칭 수정의 회귀 케이스. 수정 전에는 일부 스팬만 적용되고도 success:true를 반환하며 약 464초에서 멈췄다. 수정 후 299.63초로 완전 적용됨(2026-07-22 실측 검증).",
+      "sourceSequenceName": "시퀀스 02 복사 복사",
+      "sourceSequenceId": "c13567f6-1aa4-4716-b44b-16ca1bd7cc79",
+      "originalDurationSec": 539.17,
+      "params": {
+        "sourceTimes": false,
+        "rippleDelete": true,
+        "backup": false,
+        "dryRun": false
+      },
+      "paramsNote": "sourceTimes=false는 이 시퀀스의 클립이 start=0 / inPoint=0 / speed=1로 타임라인과 1:1 대응함을 확인했기 때문이다. 다른 시퀀스에 그대로 쓰지 마라.",
+      "removals": [
+        { "start": 41.58, "end": 48.25 },
+        { "start": 60.15, "end": 61.36 },
+        { "start": 70.04, "end": 99.38 },
+        { "start": 119.96, "end": 122.57 },
+        { "start": 122.72, "end": 126.88 },
+        { "start": 127.03, "end": 146.38 },
+        { "start": 164.2, "end": 166.56 },
+        { "start": 172.6, "end": 174.28 },
+        { "start": 195.72, "end": 197.73 },
+        { "start": 248.07, "end": 254.55 },
+        { "start": 289.84, "end": 293.25 },
+        { "start": 302.65, "end": 321.33 },
+        { "start": 340.69, "end": 366.82 },
+        { "start": 373.96, "end": 435.64 },
+        { "start": 445.44, "end": 448.98 },
+        { "start": 455.84, "end": 475.32 },
+        { "start": 484.56, "end": 486.59 },
+        { "start": 495.01, "end": 523.71 }
+      ],
+      "expect": {
+        "plannedRemovalSec": 239.52,
+        "durationSec": 299.63,
+        "toleranceSec": 0.1,
+        "fullyApplied": true,
+        "shortfallSec": 0,
+        "skippedCount": 0,
+        "inSync": true,
+        "spanCount": 18,
+        "removedClipCount": 36,
+        "razorCount": 72
+      },
+      "knownFailureSignature": {
+        "durationSec": 464,
+        "meaning": "약 464초에서 멈추면 삭제 매칭이 포함관계 기준으로 되돌아간 것이다. 중점(midpoint) 기준 매칭 회귀를 의심하라."
+      }
+    }
+  ]
+}

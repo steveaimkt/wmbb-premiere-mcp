@@ -83,4 +83,16 @@ describe('findSilenceGaps', () => {
   it('handles a transcript with no words at all', () => {
     expect(findSilenceGaps([], minGap, padding, 10)).toEqual([]);
   });
+
+  it('tags each gap with its position so intro/outro can be held back from the cut', () => {
+    const segments = [
+      seg(['하나', 4.0, 4.5]),
+      seg(['둘', 9.0, 9.5]), // 4.5s inner gap
+    ];
+    const gaps = findSilenceGaps(segments, minGap, padding, 30);
+
+    expect(gaps.map((g) => g.kind)).toEqual(['head', 'inner', 'tail']);
+    // afterText and kind must agree: the head marker is the head kind.
+    expect(gaps.find((g) => g.afterText === '(head)')!.kind).toBe('head');
+  });
 });

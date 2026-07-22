@@ -209,14 +209,16 @@ export class PremiereProTools {
       },
       {
         name: 'analyze_speech_edit_points',
-        description: 'Transcribes a media file with Whisper (word-level) and finds edit points from the SPEECH CONTENT: (1) duplicate/repeated takes where the speaker flubbed a line and said it again (the earlier take is flagged for removal), and (2) silence gaps between words. Returns removal spans + razor cut points + the full transcript with timestamps. Use this for precise cut editing of talking-head footage. Slower than analyze_audio_edit_points but content-aware. Requires Python + faster-whisper.',
+        description: 'Transcribes a media file with Whisper (word-level) and proposes cut-edit regions from the SPEECH CONTENT, sorted into REVIEWABLE CATEGORIES you present for approval rather than one flat list: duplicates (a flubbed take + the dead air before its retake), pauses (short inter-sentence silences), intro/outro margins, and longGaps (5s+ silences that are usually on-screen demos). Each category in `proposals` carries `recommended` and a `note`. `suggestedRemovals` is ONLY the recommended groups (pauses + duplicates + fillers) merged — intro, outro and long gaps are deliberately excluded so a demo or a hook is never auto-cut. Also returns `warnings` (e.g. a weak model that dropped the opening) and the full transcript. Prefer model "small"+ for Korean — "base" can miss the first seconds of a take and report them as a head gap. Requires Python + faster-whisper.',
         inputSchema: z.object({
           filePath: z.string().describe('Absolute path to the media file (video or audio) to analyze. Typically the mediaPath from list_project_items.'),
-          model: z.string().optional().describe('Whisper model size: tiny/base/small/medium/large-v3. Default "base" (fast). Use "small"/"medium" for higher accuracy.'),
+          model: z.string().optional().describe('Whisper model size: tiny/base/small/medium/large-v3. Default "small" (Korean-safe). "base"/"tiny" can transcribe nothing for the opening seconds and that gap then reads as intro silence (a real failure that once deleted a hook); a head-gap + weak model raises a warning.'),
           language: z.string().optional().describe('Language code (e.g. "ko", "en") or "auto" to detect. Default "ko".'),
           similarityThreshold: z.number().optional().describe('0..1 text-match to treat two takes as duplicates. Default 0.75. Lower catches looser repeats; higher only near-identical.'),
           minGapSec: z.number().optional().describe('Silence gap (seconds) between words to flag as trimmable. Default 0.6.'),
           paddingSec: z.number().optional().describe('Silence (seconds) kept at each end of a trimmed gap so the cut keeps its breath. Default 0.15. Set 0 to close gaps completely.'),
+          longGapSec: z.number().optional().describe('Inner gaps at or above this go in their own "longGaps" category and are NOT recommended for cutting — they are usually on-screen demos ("실행해볼게요" then silent action). Default 5.'),
+          lookbackSec: z.number().optional().describe('Seconds to look back when matching a retake to its flubbed take. Default 25 — long enough to bridge a take that breaks mid-sentence, pauses while the speaker resets the screen, and is delivered again. The removal then runs to the start of the retake, taking that dead air with it.'),
           removeFillers: z.boolean().optional().describe('Also flag filler words ("음", "uh", "um") for removal. Default false.'),
           fillerWords: z.array(z.string()).optional().describe(`Filler tokens to cut. Defaults to the unambiguous set: ${DEFAULT_FILLERS.join(', ')}. Korean single syllables like "그"/"뭐"/"이제" are excluded by default because they are also ordinary words — add them only when you know the take.`)
         })
@@ -649,7 +651,7 @@ export class PremiereProTools {
         case 'analyze_audio_edit_points':
           return await this.analyzeAudioEditPoints(args.filePath, args.noiseThresholdDb, args.minSilenceSec, args.paddingSec);
         case 'analyze_speech_edit_points':
-          return await this.analyzeSpeechEditPoints(args.filePath, args.model, args.language, args.similarityThreshold, args.minGapSec, args.paddingSec, args.removeFillers, args.fillerWords);
+          return await this.analyzeSpeechEditPoints(args.filePath, args.model, args.language, args.similarityThreshold, args.minGapSec, args.paddingSec, args.removeFillers, args.fillerWords, args.longGapSec, args.lookbackSec);
         case 'proofread_transcript':
           return await this.proofreadTranscript(args.filePath, args.scriptPath, args.model, args.language, args.confidenceThreshold, args.correctionThreshold);
         case 'export_captions':
@@ -1516,6 +1518,8 @@ export class PremiereProTools {
     paddingSec?: number,
     removeFillers?: boolean,
     fillerWords?: string[],
+    longGapSec?: number,
+    lookbackSec?: number,
   ): Promise<any> {
     if (!filePath) {
       return JSON.stringify({ success: false, error: 'filePath is required' });
@@ -1523,13 +1527,15 @@ export class PremiereProTools {
     try {
       const analysis = await analyzeSpeechEditPoints(
         filePath,
-        model ?? 'base',
+        model ?? 'small',
         language ?? 'ko',
         similarityThreshold ?? 0.75,
         minGapSec ?? 0.6,
         paddingSec ?? 0.15,
         removeFillers ?? false,
         fillerWords && fillerWords.length ? fillerWords : DEFAULT_FILLERS,
+        longGapSec ?? 5,
+        lookbackSec ?? 25,
       );
       return JSON.stringify(analysis);
     } catch (e: any) {
@@ -1875,13 +1881,15 @@ export class PremiereProTools {
     try {
       analysis = await analyzeSpeechEditPoints(
         mediaPath,
-        args.model ?? 'base',
+        args.model ?? 'small',
         args.language ?? 'ko',
         args.similarityThreshold ?? 0.75,
         args.minGapSec ?? 0.6,
         args.paddingSec ?? 0.15,
         args.removeFillers ?? false,
         args.fillerWords && args.fillerWords.length ? args.fillerWords : DEFAULT_FILLERS,
+        args.longGapSec ?? 5,
+        args.lookbackSec ?? 25,
       );
     } catch (e: any) {
       return JSON.stringify({ success: false, stage: 'analyze', error: `speech analysis failed: ${e?.message || e}` });
