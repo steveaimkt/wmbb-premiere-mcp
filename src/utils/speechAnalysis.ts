@@ -162,14 +162,21 @@ function findDuplicateTakes(
       if (sim >= threshold) {
         // prev = flubbed take (remove), cur = clean retake (keep).
         //
-        // The removal runs to the START of the retake, not to the end of the
-        // flub. Whatever sits between them is the speaker resetting — dead air,
-        // and on a screen recording sometimes twenty seconds of it. Cutting the
-        // flub but leaving its pause behind is the worst of both: the mistake is
-        // gone and the hole it left is still there. This is the one place a long
-        // silence is safe to take, because the same words bracket both sides of
-        // it, which is proof it is not a demo.
-        const removeEnd = Math.max(prev.end, Math.min(cur.start, prev.end + lookbackSec));
+        // The removal runs to the START of the retake ONLY when the retake is the
+        // very next segment (i === j+1) — i.e. nothing but silence sits between
+        // them. Then the gap is the speaker resetting (dead air, sometimes 20s),
+        // and taking it with the flub is right: the same words bracket both sides,
+        // proof it is not a demo.
+        //
+        // If any other segment sits between the flub and its retake, that segment
+        // is real content (or another take handled on its own turn). Extending
+        // across it would swallow speech that must be kept AND overlap the other
+        // take's own removal — the over-cut the simulation harness caught. So in
+        // that case remove ONLY the flubbed take itself and leave the gap.
+        const retakeImmediatelyFollows = i === j + 1;
+        const removeEnd = retakeImmediatelyFollows
+          ? Math.max(prev.end, Math.min(cur.start, prev.end + lookbackSec))
+          : prev.end;
         duplicates.push({
           removeSpan: { start: round(prev.start), end: round(removeEnd), duration: round(removeEnd - prev.start) },
           keepSpan: { start: round(cur.start), end: round(cur.end), duration: round(cur.end - cur.start) },
@@ -204,69 +211,49 @@ function mergeSpans(spans: Span[]): Span[] {
   return merged;
 }
 
+export interface AnalyzeSegmentsOptions {
+  model?: string;
+  similarityThreshold?: number;
+  minGapSec?: number;
+  paddingSec?: number;
+  removeFillers?: boolean;
+  fillerList?: string[];
+  longGapSec?: number;
+  lookbackSec?: number;
+}
+
+export interface SegmentAnalysis {
+  duplicateTakes: DuplicateTake[];
+  silenceGaps: SilenceGap[];
+  fillerWords: FillerHit[];
+  proposals: ProposalGroup[];
+  suggestedRemovals: Span[];
+  cutPoints: number[];
+  warnings: string[];
+  stats: SpeechEditAnalysis['stats'];
+}
+
 /**
- * Analyze speech to find edit points from repeated takes and silence gaps.
+ * The whole cut-plan analysis, decoupled from Whisper. Given word-level segments
+ * and the media duration, produce categorized proposals + the recommended cut.
  *
- * @param file                Absolute path to a media file (video or audio).
- * @param model               Whisper model size. Default 'base'.
- * @param language            Language code, or 'auto'. Default 'ko'.
- * @param similarityThreshold 0..1 text match to call two takes duplicates. Default 0.75.
- * @param minGapSec           Silence gap (s) between words to flag. Default 0.6.
- * @param paddingSec          Silence (s) kept at each end of a trimmed gap so the
- *                            edit keeps its breath. Default 0.15.
- * @param removeFillers       Also cut filler words ("음", "uh"). Default false.
- * @param fillerList          Filler tokens. Defaults to DEFAULT_FILLERS (only the
- *                            unambiguous ones — see cutEditing.ts).
- * @param longGapSec          Gaps at or above this are their own category, kept
- *                            out of the recommended cut because they are usually
- *                            on-screen demos, not silence. Default 5.
- * @param lookbackSec         Time window for matching a retake to its flubbed
- *                            take. Default 25 — long enough to bridge a mid-take
- *                            break and reset.
+ * Split out of analyzeSpeechEditPoints so the plan logic can be fuzzed against
+ * hundreds of synthetic transcripts with no audio and no Python — the transcription
+ * step is the only part that needs whisper, and it is a thin wrapper over this.
  */
-export async function analyzeSpeechEditPoints(
-  file: string,
-  model = 'base',
-  language = 'ko',
-  similarityThreshold = 0.75,
-  minGapSec = 0.6,
-  paddingSec = 0.15,
-  removeFillers = false,
-  fillerList: string[] = DEFAULT_FILLERS,
-  longGapSec = 5,
-  lookbackSec = 25,
-): Promise<SpeechEditAnalysis> {
-  const base: SpeechEditAnalysis = {
-    success: false,
-    file,
-    duration: 0,
-    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers, longGapSec, lookbackSec },
-    segments: [],
-    duplicateTakes: [],
-    silenceGaps: [],
-    fillerWords: [],
-    proposals: [],
-    suggestedRemovals: [],
-    cutPoints: [],
-    warnings: [],
-    stats: { segmentCount: 0, duplicateCount: 0, silenceGapCount: 0, fillerCount: 0, totalRemovableSec: 0, totalProposedSec: 0 },
-  };
-
-  if (!file) return { ...base, error: 'file path is required' };
-  if (!existsSync(file)) return { ...base, error: `file not found: ${file}` };
-
-  let transcription;
-  try {
-    transcription = await transcribeAudio(file, model, language);
-  } catch (e: any) {
-    return { ...base, error: `failed to run whisper: ${e?.message || e}` };
-  }
-  if (!transcription.success) {
-    return { ...base, error: transcription.error || 'whisper transcription failed' };
-  }
-
-  const segments: WhisperSegment[] = transcription.segments;
-  const duration = transcription.duration || (segments.length ? segments[segments.length - 1]!.end : 0);
+export function analyzeSegments(
+  segments: WhisperSegment[],
+  duration: number,
+  opts: AnalyzeSegmentsOptions = {},
+): SegmentAnalysis {
+  const model = opts.model ?? 'small';
+  const similarityThreshold = opts.similarityThreshold ?? 0.75;
+  const minGapSec = opts.minGapSec ?? 0.6;
+  const paddingSec = opts.paddingSec ?? 0.15;
+  const removeFillers = opts.removeFillers ?? false;
+  const fillerList = opts.fillerList ?? DEFAULT_FILLERS;
+  const longGapSec = opts.longGapSec ?? 5;
+  const lookbackSec = opts.lookbackSec ?? 25;
 
   const warnings: string[] = [];
 
@@ -364,12 +351,6 @@ export async function analyzeSpeechEditPoints(
   const totalProposedSec = round(proposals.reduce((acc, p) => acc + p.totalSec, 0));
 
   return {
-    success: true,
-    file,
-    language: transcription.language,
-    duration: round(duration),
-    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers, longGapSec, lookbackSec },
-    segments,
     duplicateTakes,
     silenceGaps,
     fillerWords: fillers,
@@ -385,5 +366,91 @@ export async function analyzeSpeechEditPoints(
       totalRemovableSec,
       totalProposedSec,
     },
+  };
+}
+
+/**
+ * Analyze speech to find edit points from repeated takes and silence gaps.
+ *
+ * @param file                Absolute path to a media file (video or audio).
+ * @param model               Whisper model size. Default 'base'.
+ * @param language            Language code, or 'auto'. Default 'ko'.
+ * @param similarityThreshold 0..1 text match to call two takes duplicates. Default 0.75.
+ * @param minGapSec           Silence gap (s) between words to flag. Default 0.6.
+ * @param paddingSec          Silence (s) kept at each end of a trimmed gap so the
+ *                            edit keeps its breath. Default 0.15.
+ * @param removeFillers       Also cut filler words ("음", "uh"). Default false.
+ * @param fillerList          Filler tokens. Defaults to DEFAULT_FILLERS (only the
+ *                            unambiguous ones — see cutEditing.ts).
+ * @param longGapSec          Gaps at or above this are their own category, kept
+ *                            out of the recommended cut because they are usually
+ *                            on-screen demos, not silence. Default 5.
+ * @param lookbackSec         Time window for matching a retake to its flubbed
+ *                            take. Default 25 — long enough to bridge a mid-take
+ *                            break and reset.
+ */
+export async function analyzeSpeechEditPoints(
+  file: string,
+  model = 'base',
+  language = 'ko',
+  similarityThreshold = 0.75,
+  minGapSec = 0.6,
+  paddingSec = 0.15,
+  removeFillers = false,
+  fillerList: string[] = DEFAULT_FILLERS,
+  longGapSec = 5,
+  lookbackSec = 25,
+): Promise<SpeechEditAnalysis> {
+  const base: SpeechEditAnalysis = {
+    success: false,
+    file,
+    duration: 0,
+    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers, longGapSec, lookbackSec },
+    segments: [],
+    duplicateTakes: [],
+    silenceGaps: [],
+    fillerWords: [],
+    proposals: [],
+    suggestedRemovals: [],
+    cutPoints: [],
+    warnings: [],
+    stats: { segmentCount: 0, duplicateCount: 0, silenceGapCount: 0, fillerCount: 0, totalRemovableSec: 0, totalProposedSec: 0 },
+  };
+
+  if (!file) return { ...base, error: 'file path is required' };
+  if (!existsSync(file)) return { ...base, error: `file not found: ${file}` };
+
+  let transcription;
+  try {
+    transcription = await transcribeAudio(file, model, language);
+  } catch (e: any) {
+    return { ...base, error: `failed to run whisper: ${e?.message || e}` };
+  }
+  if (!transcription.success) {
+    return { ...base, error: transcription.error || 'whisper transcription failed' };
+  }
+
+  const segments: WhisperSegment[] = transcription.segments;
+  const duration = transcription.duration || (segments.length ? segments[segments.length - 1]!.end : 0);
+
+  const analysis = analyzeSegments(segments, duration, {
+    model, similarityThreshold, minGapSec, paddingSec, removeFillers, fillerList, longGapSec, lookbackSec,
+  });
+
+  return {
+    success: true,
+    file,
+    language: transcription.language,
+    duration: round(duration),
+    params: { model, similarityThreshold, minGapSec, paddingSec, removeFillers, longGapSec, lookbackSec },
+    segments,
+    duplicateTakes: analysis.duplicateTakes,
+    silenceGaps: analysis.silenceGaps,
+    fillerWords: analysis.fillerWords,
+    proposals: analysis.proposals,
+    suggestedRemovals: analysis.suggestedRemovals,
+    cutPoints: analysis.cutPoints,
+    warnings: analysis.warnings,
+    stats: analysis.stats,
   };
 }
