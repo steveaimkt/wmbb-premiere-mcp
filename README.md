@@ -29,20 +29,33 @@ It does **one thing**: cut editing. 25 focused tools, no color/transitions/title
 
 Requires: **Adobe Premiere Pro (Beta)** with the MCP bridge panel, **Node 18+**, and **Python + faster-whisper** (`pip install faster-whisper`) and **ffmpeg** on PATH.
 
-```bash
-git clone https://github.com/<you>/wmbb-premiere-cut-mcp
-cd wmbb-premiere-cut-mcp
-npm install && npm run build
+**Option A — run straight from GitHub (no clone):**
+
+```json
+{
+  "mcpServers": {
+    "premiere-cut": {
+      "command": "npx",
+      "args": ["-y", "github:steveaimkt/Adobe_Premiere_Pro_MCP"]
+    }
+  }
+}
 ```
 
-Add to your MCP client (Claude Desktop / Claude Code / Cursor):
+**Option B — clone and run locally:**
+
+```bash
+git clone https://github.com/steveaimkt/Adobe_Premiere_Pro_MCP
+cd Adobe_Premiere_Pro_MCP
+npm install && npm run build
+```
 
 ```json
 {
   "mcpServers": {
     "premiere-cut": {
       "command": "node",
-      "args": ["/absolute/path/to/wmbb-premiere-cut-mcp/dist/index.js"]
+      "args": ["/absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js"]
     }
   }
 }

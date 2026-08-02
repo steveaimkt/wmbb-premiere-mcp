@@ -1,7 +1,7 @@
 {
   "name": "wmbb-premiere-pro-mcp",
   "version": "1.0.0",
-  "description": "Model Context Protocol tools for Adobe Premiere Pro - AI-powered video editing through natural language prompts",
+  "description": "Cut-editing specialist MCP for Adobe Premiere Pro — remove silences and repeated takes by talking to Claude, with demos and hooks protected and every cut verified.",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -14,7 +14,8 @@
     "test": "jest",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src/**/*.ts",
-    "simulate": "node scripts/simulate-cuts.mjs 1000"
+    "simulate": "node scripts/simulate-cuts.mjs 1000",
+    "prepare": "npm run build"
   },
   "keywords": [
     "mcp",
@@ -23,7 +24,12 @@
     "video-editing",
     "ai-automation",
     "extendscript",
-    "uxp"
+    "uxp",
+    "premiere-pro",
+    "cut-editing",
+    "whisper",
+    "silence-removal",
+    "claude"
   ],
   "author": "Your Name",
   "license": "MIT",
@@ -53,5 +59,13 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "bin": {
+    "wmbb-premiere-cut-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE.md"
+  ]
 }
