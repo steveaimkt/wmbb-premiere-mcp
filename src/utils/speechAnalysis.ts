@@ -193,6 +193,69 @@ function findDuplicateTakes(
   return duplicates;
 }
 
+/**
+ * Collapse a run of sentence-level retakes into one block removal.
+ *
+ * When a speaker redoes a whole paragraph, sentence-pair matching finds several
+ * duplicates in a row — but only the sentences whose wording survived verbatim.
+ * The reworded ones in between match nothing, so removing the block one sentence
+ * at a time leaves those middle sentences orphaned: a Swiss-cheese cut that reads
+ * as broken speech. Found on real footage (K2.7 explanation recorded twice).
+ *
+ * When ≥2 duplicate pairs line up — flubs contiguous and ordered, their retakes
+ * also contiguous and ordered and sitting after the flubs — that is a retaken
+ * BLOCK, not coincidental repeats. Merge the run into a single removal from the
+ * first flub to the start of the retake block, taking the whole first take plus
+ * the reset gap and keeping the clean second take intact. The ≥2-aligned guard
+ * keeps a lone repeated sentence on the safe sentence-level path.
+ */
+function mergeRetakeBlocks(dups: DuplicateTake[], contigGap = 6): DuplicateTake[] {
+  if (dups.length < 2) return dups;
+  const sorted = [...dups].sort((a, b) => a.removeSpan.start - b.removeSpan.start);
+  const out: DuplicateTake[] = [];
+  let run: DuplicateTake[] = [sorted[0]!];
+
+  const flush = () => {
+    if (run.length >= 2) {
+      const first = run[0]!;
+      const last = run[run.length - 1]!;
+      const start = first.removeSpan.start;
+      // End at the last matched flub's end, but never past where the retake
+      // block begins. Two guards in one min():
+      //  - vs last flub end: don't extend to the retake start, or the reset gap
+      //    (which may hold unique content — the A-B-C-A-B over-cut) gets swallowed.
+      //  - vs first retake start: if the flub block interleaves past the retake
+      //    start (coincidental matches), clamp so the removal never eats into the
+      //    take we keep (the I8 removeSpan-overlaps-keepSpan the sim caught).
+      // Interior unmatched sentences (bracketed by matched flubs) are inside
+      // [start, end] and get removed; an unmatched tail is left alone, safe.
+      const end = Math.min(Math.max(...run.map((d) => d.removeSpan.end)), first.keepSpan.start);
+      out.push({
+        removeSpan: { start, end, duration: round(end - start) },
+        keepSpan: { start: first.keepSpan.start, end: last.keepSpan.end, duration: round(last.keepSpan.end - first.keepSpan.start) },
+        similarity: round(Math.min(...run.map((d) => d.similarity))),
+        removedText: run.map((d) => d.removedText).join(' / '),
+        keptText: run.map((d) => d.keptText).join(' / '),
+      });
+    } else {
+      out.push(run[0]!);
+    }
+    run = [];
+  };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = run[run.length - 1]!;
+    const cur = sorted[i]!;
+    const flubsContig = cur.removeSpan.start >= prev.removeSpan.start && cur.removeSpan.start - prev.removeSpan.end < contigGap;
+    const retakesContig = cur.keepSpan.start >= prev.keepSpan.start && cur.keepSpan.start - prev.keepSpan.end < contigGap;
+    const retakeAfterFlub = cur.keepSpan.start > cur.removeSpan.end;
+    if (flubsContig && retakesContig && retakeAfterFlub) run.push(cur);
+    else { flush(); run = [cur]; }
+  }
+  flush();
+  return out.sort((a, b) => a.removeSpan.start - b.removeSpan.start);
+}
+
 /** Merge overlapping spans into a clean sorted removal list. */
 function mergeSpans(spans: Span[]): Span[] {
   if (!spans.length) return [];
@@ -269,7 +332,7 @@ export function analyzeSegments(
     );
   }
 
-  const duplicateTakes = findDuplicateTakes(segments, similarityThreshold, lookbackSec);
+  const duplicateTakes = mergeRetakeBlocks(findDuplicateTakes(segments, similarityThreshold, lookbackSec));
   const silenceGaps = findSilenceGaps(segments, minGapSec, paddingSec, duration);
   const fillers = removeFillers ? findFillerWords(segments, fillerList) : [];
 

@@ -203,18 +203,25 @@ function semanticChecks() {
     else if (Math.abs(d.removeSpan.end - 23) > 0.1) errs.push(`SEM1 expected removeSpan.end≈23, got ${d.removeSpan.end}`);
   }
 
-  // 2) intervening real content → do NOT extend across it (no over-cut):
-  //    A[1..2], B[3..4], A[10..11], B[12..13]. A's removal must stay [1..2], not swallow B.
+  // 2) real content between a flub block and its retake must NEVER be cut.
+  //    A[1..2] B[3..4] C[6..7 UNIQUE] A[10..11] B[12..13]. A+B are a paragraph
+  //    retake (removing take-1 A,B is fine), but C is unique content sitting in
+  //    the reset gap — it must survive. This is the over-cut guard.
   {
     const segs = [
       { text: '문장 에이', start: 1, end: 2, words: [w('문장', 1, 1.5), w('에이', 1.5, 2)] },
       { text: '문장 비', start: 3, end: 4, words: [w('문장', 3, 3.5), w('비', 3.5, 4)] },
+      { text: '고유한 콘텐츠 씨', start: 6, end: 7, words: [w('고유한', 6, 6.4), w('콘텐츠', 6.4, 6.8), w('씨', 6.8, 7)] },
       { text: '문장 에이', start: 10, end: 11, words: [w('문장', 10, 10.5), w('에이', 10.5, 11)] },
       { text: '문장 비', start: 12, end: 13, words: [w('문장', 12, 12.5), w('비', 12.5, 13)] },
     ];
     const res = analyzeSegments(segs, 20, {});
+    // C is [6,7]; no removal span may overlap it.
+    for (const r of res.suggestedRemovals) {
+      if (r.start < 7 - 0.02 && 6 < r.end - 0.02) errs.push(`SEM2 over-cut: unique content C[6-7] hit by removal ${r.start}->${r.end}`);
+    }
     for (const d of res.duplicateTakes) {
-      if (d.removeSpan.duration > 2) errs.push(`SEM2 over-cut: removeSpan ${d.removeSpan.start}->${d.removeSpan.end} swallowed intervening content`);
+      if (d.removeSpan.start < 7 - 0.02 && 6 < d.removeSpan.end - 0.02) errs.push(`SEM2 over-cut: dup removeSpan ${d.removeSpan.start}->${d.removeSpan.end} swallowed C`);
     }
   }
 
