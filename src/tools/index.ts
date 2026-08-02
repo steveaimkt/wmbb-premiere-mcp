@@ -8,7 +8,6 @@
 import { z } from 'zod';
 import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
-import { analyzeAudioEditPoints } from '../utils/audioAnalysis.js';
 import { analyzeSpeechEditPoints } from '../utils/speechAnalysis.js';
 import { buildCues, serializeCues } from '../utils/captions.js';
 import { findTextSpans, DEFAULT_FILLERS } from '../utils/cutEditing.js';
@@ -94,41 +93,14 @@ export class PremiereProTools {
 
       // Project Management
       {
-        name: 'open_project',
-        description: 'Opens an existing Adobe Premiere Pro project from a specified file path.',
-        inputSchema: z.object({
-          path: z.string().describe('The absolute path to the .prproj file to open')
-        })
-      },
-      {
         name: 'save_project',
         description: 'Saves the currently active Adobe Premiere Pro project.',
         inputSchema: z.object({})
       },
 
       // Media Management
-      {
-        name: 'import_media',
-        description: 'Imports a media file (video, audio, image) into the current Premiere Pro project.',
-        inputSchema: z.object({
-          filePath: z.string().describe('The absolute path to the media file to import'),
-          binName: z.string().optional().describe('The name of the bin to import the media into. If not provided, it will be imported into the root.')
-        })
-      },
 
       // Sequence Management
-      {
-        name: 'create_sequence',
-        description: 'Creates a new sequence in the project. A sequence is a timeline where you edit clips.',
-        inputSchema: z.object({
-          name: z.string().describe('The name for the new sequence'),
-          presetPath: z.string().optional().describe('Optional path to a sequence preset file for custom settings'),
-          width: z.number().optional().describe('Sequence width in pixels'),
-          height: z.number().optional().describe('Sequence height in pixels'),
-          frameRate: z.number().optional().describe('Frame rate (e.g., 24, 25, 30, 60)'),
-          sampleRate: z.number().optional().describe('Audio sample rate (e.g., 48000)')
-        })
-      },
       {
         name: 'duplicate_sequence',
         description: 'Creates a copy of an existing sequence with a new name.',
@@ -137,27 +109,8 @@ export class PremiereProTools {
           newName: z.string().describe('The name for the new sequence copy')
         })
       },
-      {
-        name: 'delete_sequence',
-        description: 'Deletes a sequence from the project.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence to delete')
-        })
-      },
 
       // Timeline Operations
-      {
-        name: 'add_to_timeline',
-        description: 'Adds a media clip from the project panel to a sequence timeline at a specific track and time.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence (timeline) to add the clip to'),
-          projectItemId: z.string().describe('The ID of the project item (clip) to add'),
-          trackIndex: z.number().describe('The index of the video or audio track (0-based)'),
-          time: z.number().describe('The time in seconds where the clip should be placed on the timeline'),
-          insertMode: z.enum(['overwrite', 'insert']).optional().describe('Whether to overwrite existing content or insert and shift'),
-          linkAudio: z.boolean().optional().describe('When false, removes the auto-linked audio counterpart that Premiere places on audio tracks for video-track clips. Useful for video overlays whose source media (e.g. Remotion .mov outputs) carry silent PCM that would overwrite existing audio. Default true (preserves Premiere\'s native linking behavior).')
-        })
-      },
       {
         name: 'remove_from_timeline',
         description: 'Removes a clip from the timeline. On a ripple delete the linked clip on the opposite track (audio for a video clip, video for an audio clip) is removed too, so the tracks stay aligned — pass removeLinked:false to take only the one clip. Pass sequenceId when the clip ID came from list_sequence_tracks for a non-active sequence.',
@@ -166,15 +119,6 @@ export class PremiereProTools {
           sequenceId: z.string().optional().describe('Optional sequence ID to search. If omitted, searches the active sequence first, then all sequences.'),
           deleteMode: z.enum(['ripple', 'lift']).optional().describe('Whether to ripple delete (close gap) or lift (leave gap)'),
           removeLinked: z.boolean().optional().describe('Also remove the linked clip on the opposite track type so a ripple delete does not desync A/V. Default true. Only applies to ripple deletes.')
-        })
-      },
-      {
-        name: 'move_clip',
-        description: 'Moves a clip to a different position on the timeline.',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the clip to move'),
-          newTime: z.number().describe('The new time position in seconds'),
-          newTrackIndex: z.number().optional().describe('The new track index (if moving to different track)')
         })
       },
       {
@@ -195,16 +139,6 @@ export class PremiereProTools {
           time: z.number().describe('Absolute timeline time in seconds where the cut should occur.'),
           videoTrackIndices: z.array(z.number().int().min(0)).optional().describe('Optional video track indices to cut. Defaults to all video tracks.'),
           audioTrackIndices: z.array(z.number().int().min(0)).optional().describe('Optional audio track indices to cut. Defaults to all audio tracks.')
-        })
-      },
-      {
-        name: 'analyze_audio_edit_points',
-        description: 'Analyzes a media file\'s AUDIO with ffmpeg (no Premiere needed) to find real edit points based on silence. Returns silence regions, speech segments, and the exact razor cut points needed to remove the silences. Use this FIRST to place cuts on actual audio data instead of guessing timecodes. Get the file path from list_project_items (mediaPath field). Times are absolute seconds within the source clip.',
-        inputSchema: z.object({
-          filePath: z.string().describe('Absolute path to the media file (video or audio) to analyze. Typically the mediaPath from list_project_items.'),
-          noiseThresholdDb: z.number().optional().describe('Level (dB) below which audio counts as silence. Default -30. Lower (e.g. -40) is stricter; higher (e.g. -20) treats quieter parts as silence.'),
-          minSilenceSec: z.number().optional().describe('Ignore silences shorter than this many seconds. Default 0.5. Raise to avoid cutting natural breathing pauses.'),
-          paddingSec: z.number().optional().describe('Seconds of silence kept around each speech segment so speech is not clipped. Default 0.1.')
         })
       },
       {
@@ -267,28 +201,6 @@ export class PremiereProTools {
         })
       },
       {
-        name: 'auto_cut_edit',
-        description: 'One-shot cut edit: analyzes the speech in the sequence\'s media, then removes silences, repeated takes and (optionally) filler words from the timeline, and writes captions. Runs as a DRY RUN by default so you can read the plan and approve it before anything is touched. Resolves the media file from the timeline itself when mediaPath is omitted, backs the sequence up before cutting, and converts source-clip times to timeline times, so the whole chain is one call instead of five.',
-        inputSchema: z.object({
-          sequenceId: z.string().optional().describe('Sequence to edit. Defaults to the active sequence.'),
-          mediaPath: z.string().optional().describe('Media file to analyze. Omit to use the first clip on the lowest targeted video track.'),
-          scriptPath: z.string().optional().describe('Reference script/narration. Used to correct misrecognitions before captions are written.'),
-          dryRun: z.boolean().optional().describe('Return the plan without touching the timeline. DEFAULT TRUE — pass false to actually cut.'),
-          backup: z.boolean().optional().describe('Duplicate the sequence before cutting so the original survives. Default true.'),
-          removeFillers: z.boolean().optional().describe('Also cut filler words ("음", "uh"). Default false.'),
-          fillerWords: z.array(z.string()).optional().describe('Filler tokens to cut. Defaults to the unambiguous set.'),
-          minGapSec: z.number().optional().describe('Silence between words (seconds) to treat as trimmable. Default 0.6.'),
-          paddingSec: z.number().optional().describe('Silence kept at each end of a trimmed gap. Default 0.15.'),
-          similarityThreshold: z.number().optional().describe('0..1 match to treat two takes as duplicates. Default 0.75.'),
-          captions: z.boolean().optional().describe('Write a subtitle file after cutting. Default true. Ignored on a dry run.'),
-          captionFormat: z.enum(['srt', 'vtt', 'txt']).optional().describe('Subtitle format. Default srt.'),
-          model: z.string().optional().describe('Whisper model size. Default "base".'),
-          language: z.string().optional().describe('Language code or "auto". Default "ko".'),
-          videoTrackIndices: z.array(z.number().int().min(0)).optional().describe('Video tracks to cut. Defaults to all.'),
-          audioTrackIndices: z.array(z.number().int().min(0)).optional().describe('Audio tracks to cut. Defaults to all.')
-        })
-      },
-      {
         name: 'backup_sequence',
         description: 'Duplicates a sequence so an edit can be undone wholesale. apply_timeline_removals and auto_cut_edit already do this on their own; call this directly before any other risky change.',
         inputSchema: z.object({
@@ -303,19 +215,6 @@ export class PremiereProTools {
           backupSequenceId: z.string().describe('The backup sequence to restore (its ID, from list_sequences).'),
           deleteDamaged: z.boolean().optional().describe('Delete the sequence that was being edited. Default false — keep it until you have confirmed the restore.'),
           damagedSequenceId: z.string().optional().describe('The sequence to delete. Required when deleteDamaged is true.')
-        })
-      },
-      {
-        name: 'make_short',
-        description: 'Extracts a vertical (or square) short-form clip from a range of the timeline: creates a subsequence of that range, then auto-reframes it to the target aspect so the speaker stays in frame. Use find_speech_spans to locate the moment by what was said, then feed its start/end here.',
-        inputSchema: z.object({
-          start: z.number().describe('Range start in timeline seconds.'),
-          end: z.number().describe('Range end in timeline seconds.'),
-          sequenceId: z.string().optional().describe('Source sequence. Defaults to the active sequence.'),
-          name: z.string().optional().describe('Name for the resulting sequence. Defaults to "<source> short <start>-<end>".'),
-          aspect: z.enum(['9:16', '1:1', '4:5', '16:9']).optional().describe('Target aspect ratio. Default 9:16 (Reels/Shorts/TikTok).'),
-          motionPreset: z.enum(['slower', 'default', 'faster']).optional().describe('Auto-reframe tracking responsiveness. Default "default".'),
-          reframe: z.boolean().optional().describe('Run auto-reframe. Default true. Set false to only cut the subsequence.')
         })
       },
       {
@@ -338,102 +237,12 @@ export class PremiereProTools {
       },
 
       // Effects and Transitions
-      {
-        name: 'add_transition_to_clip',
-        description: 'Adds a transition to the beginning or end of a single clip.',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the clip'),
-          transitionName: z.string().describe('The name of the transition'),
-          position: z.enum(['start', 'end']).describe('Whether to add the transition at the start or end of the clip'),
-          duration: z.number().describe('The duration of the transition in seconds')
-        })
-      },
 
       // Audio Operations
-      {
-        name: 'adjust_audio_levels',
-        description: 'Adjusts the volume (gain) of an audio clip on the timeline.',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the audio clip to adjust'),
-          level: z.number().describe('The new audio level in decibels (dB). Can be positive or negative.')
-        })
-      },
-      {
-        name: 'setup_ducking',
-        description:
-          'High-level wrapper around add_audio_keyframes that builds a ducking curve from a base level + ducking windows. ' +
-          'Computes 4 keyframes per window (pre-fade, duck-in, duck-out, post-fade) plus boundary keyframes at clip start/end. ' +
-          'Replaces the manual "8 keyframes per video" pattern from Sprint 3. Times are clip-source-time absolute (same convention as add_audio_keyframes).',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the music/SFX clip to apply ducking to'),
-          baseDb: z.number().describe('Sustained level in dB (e.g. -25 for music bed under voice)'),
-          duckingWindows: z
-            .array(
-              z.object({
-                startTime: z.number().describe('When to begin ducking, in seconds (clip-source-time absolute)'),
-                endTime: z.number().describe('When to recover from ducking, in seconds'),
-                duckedDb: z.number().describe('Lower level in dB during this window (e.g. -38 for narrative pause)'),
-              })
-            )
-            .describe('Windows where the clip should duck below baseDb. Empty array = sustained baseDb only.'),
-          fadeSeconds: z
-            .number()
-            .optional()
-            .describe('Ramp time for each transition (default 0.2s = 6 frames @30fps)'),
-          clipStartTime: z
-            .number()
-            .optional()
-            .describe('Clip start time anchor for first keyframe (default 0)'),
-          clipEndTime: z
-            .number()
-            .optional()
-            .describe('Clip end time anchor for last keyframe; if omitted, last duck window endTime + 1s is used'),
-        }),
-      },
 
       // Text and Graphics
-      {
-        name: 'add_text_overlay',
-        description: 'Adds a text layer (title) over the video timeline. Requires a MOGRT (.mogrt) template file path. Supports up to 4 text fields (text, text2, text3, text4) — each populates the Nth "AE.ADBE Text" component in the MOGRT (e.g., for Basic Lower Third: text=main title, text2=subtitle).',
-        inputSchema: z.object({
-          text: z.string().describe('Text for the first AE text component in the MOGRT (typically the main title)'),
-          text2: z.string().optional().describe('Text for the second AE text component (e.g., subtitle of a lower third)'),
-          text3: z.string().optional().describe('Text for the third AE text component (if present)'),
-          text4: z.string().optional().describe('Text for the fourth AE text component (if present)'),
-          sequenceId: z.string().describe('The sequence to add the text to'),
-          trackIndex: z.number().describe('The video track to place the text on (0-indexed; create the track first via add_track if needed)'),
-          startTime: z.number().describe('The time in seconds when the text should appear'),
-          duration: z.number().describe('How long the text should remain on screen in seconds (best-effort; the MOGRT\'s natural duration may take precedence)'),
-          mogrtPath: z.string().optional().describe('Absolute path to a .mogrt template file (required for text overlays)'),
-          textPropertyName: z.string().optional().describe('Override: explicit displayName of the property to write into. When set, only `text` is written (text2/text3/text4 are ignored) and the call fails if no property with that displayName exists. Use only when auto-detection picks the wrong field.')
-        })
-      },
 
       // Color Correction
-      {
-        name: 'color_correct',
-        description: 'Applies basic color correction adjustments to a video clip.',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the clip to color correct'),
-          brightness: z.number().optional().describe('Brightness adjustment (-100 to 100)'),
-          contrast: z.number().optional().describe('Contrast adjustment (-100 to 100)'),
-          saturation: z.number().optional().describe('Saturation adjustment (-100 to 100)'),
-          hue: z.number().optional().describe('Hue adjustment in degrees (-180 to 180)'),
-          highlights: z.number().optional().describe('Adjustment for the brightest parts of the image (-100 to 100)'),
-          shadows: z.number().optional().describe('Adjustment for the darkest parts of the image (-100 to 100)'),
-          temperature: z.number().optional().describe('Color temperature adjustment (-100 to 100)'),
-          tint: z.number().optional().describe('Tint adjustment (-100 to 100)')
-        })
-      },
-      {
-        name: 'apply_lut',
-        description: 'Applies a Look-Up Table (LUT) to a clip for color grading.',
-        inputSchema: z.object({
-          clipId: z.string().describe('The ID of the clip'),
-          lutPath: z.string().describe('The absolute path to the .cube or .3dl LUT file'),
-          intensity: z.number().optional().describe('LUT intensity (0-100)')
-        })
-      },
 
       // Export and Rendering
       {
@@ -460,25 +269,6 @@ export class PremiereProTools {
       },
 
       // Markers
-      {
-        name: 'add_marker',
-        description: 'Adds a marker to the timeline for navigation or notes.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence to add the marker to'),
-          time: z.number().describe('The time in seconds where the marker should be placed'),
-          name: z.string().describe('The name/label for the marker'),
-          comment: z.string().optional().describe('Optional comment or description for the marker'),
-          color: z.string().optional().describe('Marker color (e.g., "red", "green", "blue")'),
-          duration: z.number().optional().describe('Duration in seconds for a span marker (0 for point marker)')
-        })
-      },
-      {
-        name: 'list_markers',
-        description: 'Lists all markers in a sequence.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence')
-        })
-      },
 
       // Track Management
 
@@ -528,41 +318,10 @@ export class PremiereProTools {
       // Clip Lookup
 
       // Auto Reframe
-      {
-        name: 'auto_reframe_sequence',
-        description: 'Automatically reframes a sequence to a new aspect ratio using AI-powered motion tracking.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence to reframe'),
-          numerator: z.number().describe('Aspect ratio numerator (e.g., 9 for 9:16)'),
-          denominator: z.number().describe('Aspect ratio denominator (e.g., 16 for 9:16)'),
-          motionPreset: z.enum(['slower', 'default', 'faster']).optional().describe('Motion tracking speed preset'),
-          newName: z.string().optional().describe('Name for the reframed sequence')
-        })
-      },
 
       // Scene Edit Detection
-      {
-        name: 'detect_scene_edits',
-        description: 'Detects scene changes in selected clips and optionally adds cuts or markers.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
-          action: z.enum(['ApplyCuts', 'CreateMarkers']).optional().describe('Action to take at detected edit points'),
-          applyCutsToLinkedAudio: z.boolean().optional().describe('Whether to apply cuts to linked audio'),
-          sensitivity: z.string().optional().describe('Detection sensitivity (e.g., "Low", "Medium", "High")')
-        })
-      },
 
       // Captions
-      {
-        name: 'create_caption_track',
-        description: 'Creates a caption track from a caption/subtitle file.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence'),
-          projectItemId: z.string().describe('The ID of the caption file project item'),
-          startTime: z.number().optional().describe('Start time in seconds for the captions'),
-          captionFormat: z.string().optional().describe('Caption format (e.g., "Subtitle Default")')
-        })
-      },
       {
         name: 'read_sequence_captions',
         description: 'Reads all caption tracks of a sequence and returns each caption clip as { start, end, text }, with timestamps in seconds. Use this to find the timecodes of specific spoken phrases.',
@@ -578,14 +337,6 @@ export class PremiereProTools {
         name: 'undo',
         description: 'Performs an undo operation in Premiere Pro.',
         inputSchema: z.object({})
-      },
-      {
-        name: 'create_subsequence',
-        description: 'Creates a subsequence from the in/out points of a sequence.',
-        inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the source sequence'),
-          ignoreTrackTargeting: z.boolean().optional().describe('Whether to ignore track targeting (default: false)')
-        })
       },
     ];
   }
@@ -624,32 +375,18 @@ export class PremiereProTools {
           return await this.listSequenceTracks(args.sequenceId);
         case 'get_project_info':
           return await this.getProjectInfo();
-        case 'open_project':
-          return await this.openProject(args.path);
         case 'save_project':
           return await this.saveProject();
-        case 'import_media':
-          return await this.importMedia(args.filePath, args.binName);
-        case 'create_sequence':
-          return await this.createSequence(args.name, args.presetPath, args.width, args.height, args.frameRate, args.sampleRate);
         case 'duplicate_sequence':
           return await this.duplicateSequence(args.sequenceId, args.newName);
-        case 'delete_sequence':
-          return await this.deleteSequence(args.sequenceId);
         case 'read_sequence_captions':
           return await this.readSequenceCaptions(args.sequenceId);
-        case 'add_to_timeline':
-          return await this.addToTimeline(args.sequenceId, args.projectItemId, args.trackIndex, args.time, args.insertMode, args.linkAudio);
         case 'remove_from_timeline':
           return await this.removeFromTimeline(args.clipId, args.sequenceId, args.deleteMode, args.removeLinked);
-        case 'move_clip':
-          return await this.moveClip(args.clipId, args.newTime, args.newTrackIndex);
         case 'trim_clip':
           return await this.trimClip(args.clipId, args.inPoint, args.outPoint, args.duration);
         case 'razor_timeline_at_time':
           return await this.razorTimelineAtTime(args.sequenceId, args.time, args.videoTrackIndices, args.audioTrackIndices);
-        case 'analyze_audio_edit_points':
-          return await this.analyzeAudioEditPoints(args.filePath, args.noiseThresholdDb, args.minSilenceSec, args.paddingSec);
         case 'analyze_speech_edit_points':
           return await this.analyzeSpeechEditPoints(args.filePath, args.model, args.language, args.similarityThreshold, args.minGapSec, args.paddingSec, args.removeFillers, args.fillerWords, args.longGapSec, args.lookbackSec);
         case 'proofread_transcript':
@@ -658,41 +395,18 @@ export class PremiereProTools {
           return await this.exportCaptions(args.filePath, args.outputPath, args.format, args.scriptPath, args.model, args.language, args.maxCharsPerLine, args.maxLines, args.maxDurationSec, args.minDurationSec, args.correctionThreshold, args.glossary, args.importToSequence);
         case 'find_speech_spans':
           return await this.findSpeechSpans(args.filePath, args.query, args.threshold, args.paddingSec, args.model, args.language);
-        case 'auto_cut_edit':
-          return await this.autoCutEdit(args);
         case 'backup_sequence':
           return await this.backupSequence(args.sequenceId, args.label);
         case 'restore_sequence_backup':
           return await this.restoreSequenceBackup(args.backupSequenceId, args.deleteDamaged, args.damagedSequenceId);
-        case 'make_short':
-          return await this.makeShort(args.start, args.end, args.sequenceId, args.name, args.aspect, args.motionPreset, args.reframe);
         case 'apply_timeline_removals':
           return await this.applyTimelineRemovals(args.sequenceId, args.removals, args.videoTrackIndices, args.audioTrackIndices, args.rippleDelete, args.dryRun, args.sourceTimes, args.sourceMediaPath, args.backup);
 
         // Effects and Transitions
-        case 'add_transition_to_clip':
-          return await this.addTransitionToClip(args.clipId, args.transitionName, args.position, args.duration);
 
         // Audio Operations
-        case 'adjust_audio_levels':
-          return await this.adjustAudioLevels(args.clipId, args.level);
-        case 'setup_ducking':
-          return await this.setupDucking(
-            args.clipId,
-            args.baseDb,
-            args.duckingWindows,
-            args.fadeSeconds,
-            args.clipStartTime,
-            args.clipEndTime
-          );
-        case 'add_text_overlay':
-          return await this.addTextOverlay(args);
 
         // Color Correction
-        case 'color_correct':
-          return await this.colorCorrect(args.clipId, args);
-        case 'apply_lut':
-          return await this.applyLut(args.clipId, args.lutPath, args.intensity);
 
         // Export and Rendering
         case 'export_sequence':
@@ -701,10 +415,6 @@ export class PremiereProTools {
           return await this.exportFrame(args.sequenceId, args.time, args.outputPath, args.format);
 
         // Markers
-        case 'add_marker':
-          return await this.addMarker(args.sequenceId, args.time, args.name, args.comment, args.color, args.duration);
-        case 'list_markers':
-          return await this.listMarkers(args.sequenceId);
 
         // Track Management
         case 'get_clip_properties':
@@ -715,22 +425,14 @@ export class PremiereProTools {
           return await this.getActiveSequence();
 
         // Clip Lookup
-        case 'auto_reframe_sequence':
-          return await this.autoReframeSequence(args.sequenceId, args.numerator, args.denominator, args.motionPreset, args.newName);
 
         // Scene Edit Detection
-        case 'detect_scene_edits':
-          return await this.detectSceneEdits(args.sequenceId, args.action, args.applyCutsToLinkedAudio, args.sensitivity);
 
         // Captions
-        case 'create_caption_track':
-          return await this.createCaptionTrack(args.sequenceId, args.projectItemId, args.startTime, args.captionFormat);
 
         // Subclip
         case 'undo':
           return await this.undo();
-        case 'create_subsequence':
-          return await this.createSubsequence(args.sequenceId, args.ignoreTrackTargeting);
         default:
           return {
             success: false,
@@ -944,30 +646,6 @@ export class PremiereProTools {
 
   // Project Management Implementation
 
-  private async openProject(path: string): Promise<any> {
-    try {
-      const result: any = await this.bridge.openProject(path);
-      if (result?.success === false) {
-        return {
-          ...result,
-          projectPath: result.projectPath || path
-        };
-      }
-
-      return {
-        success: true,
-        message: `Project opened successfully`,
-        projectPath: path,
-        ...result
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: `Failed to open project: ${error instanceof Error ? error.message : String(error)}`
-      };
-    }
-  }
-
   private async saveProject(): Promise<any> {
     try {
       await this.bridge.saveProject();
@@ -1032,36 +710,6 @@ export class PremiereProTools {
 
 
   // Sequence Management Implementation
-  private async createSequence(name: string, presetPath?: string, _width?: number, _height?: number, _frameRate?: number, _sampleRate?: number): Promise<any> {
-    try {
-      const result: any = await this.bridge.createSequence(name, presetPath);
-      if (result?.success === false) {
-        return {
-          ...result,
-          sequenceName: result.sequenceName || name
-        };
-      }
-
-      return {
-        success: true,
-        message: `Sequence "${name}" created successfully`,
-        sequenceName: name,
-        ...result
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const timedOut = /timeout|timed out/i.test(message);
-      return {
-        success: false,
-        error: `Failed to create sequence: ${message}`,
-        sequenceName: name,
-        ...(timedOut ? {
-          warning: 'Premiere may still create the sequence after this timeout. Wait for the bridge to become responsive, then run list_sequences to verify before retrying. The server intentionally does not run automatic recovery after a timeout because that can wedge the CEP bridge on Windows.'
-        } : {})
-      };
-    }
-  }
-
   private async duplicateSequence(sequenceId: string, newName: string): Promise<any> {
     const safeName = JSON.stringify(newName);
     const script = `
@@ -1207,65 +855,7 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async deleteSequence(sequenceId: string): Promise<any> {
-    const script = `
-      try {
-        var sequence = __findSequence("${sequenceId}");
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
-        var sequenceName = sequence.name;
-        app.project.deleteSequence(sequence);
-        return JSON.stringify({
-          success: true,
-          message: "Sequence deleted successfully",
-          deletedSequenceId: "${sequenceId}",
-          deletedSequenceName: sequenceName
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-
-    return await this.bridge.executeScript(script);
-  }
-
   // Timeline Operations Implementation
-  private async addToTimeline(sequenceId: string, projectItemId: string, trackIndex: number, time: number, insertMode = 'overwrite', linkAudio: boolean = true): Promise<any> {
-    try {
-      const result: any = await this.bridge.addToTimeline(sequenceId, projectItemId, trackIndex, time, linkAudio);
-      if (!result.success) {
-        return {
-          ...result,
-          sequenceId: sequenceId,
-          projectItemId: projectItemId,
-          trackIndex: trackIndex,
-          time: time,
-          insertMode: insertMode,
-          linkAudio: linkAudio
-        };
-      }
-      return {
-        success: true,
-        message: `Clip added to timeline successfully`,
-        sequenceId: sequenceId,
-        projectItemId: projectItemId,
-        trackIndex: trackIndex,
-        time: time,
-        insertMode: insertMode,
-        linkAudio: linkAudio,
-        ...result
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: `Failed to add clip to timeline: ${error instanceof Error ? error.message : String(error)}`,
-        sequenceId: sequenceId,
-        projectItemId: projectItemId,
-        trackIndex: trackIndex,
-        time: time
-      };
-    }
-  }
-
   private async removeFromTimeline(clipId: string, sequenceId?: string, deleteMode = 'ripple', removeLinked = true): Promise<any> {
     const script = `
       try {
@@ -1312,34 +902,6 @@ export class PremiereProTools {
           sequenceName: info.sequenceName,
           deleteMode: ${JSON.stringify(deleteMode)},
           linkedRemoved: partners.length
-        });
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-
-    return await this.bridge.executeScript(script);
-  }
-
-  private async moveClip(clipId: string, newTime: number, _newTrackIndex?: number): Promise<any> {
-    const script = `
-      try {
-        var info = __findClip("${clipId}");
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var clip = info.clip;
-        var oldTime = clip.start.seconds;
-        var shiftAmount = ${newTime} - oldTime;
-        clip.move(shiftAmount);
-        return JSON.stringify({
-          success: true,
-          message: "Clip moved successfully",
-          clipId: "${clipId}",
-          oldTime: oldTime,
-          newTime: ${newTime},
-          trackIndex: info.trackIndex
         });
       } catch (e) {
         return JSON.stringify({
@@ -1485,28 +1047,6 @@ export class PremiereProTools {
     `;
 
     return await this.bridge.executeScript(script);
-  }
-
-  private async analyzeAudioEditPoints(
-    filePath?: string,
-    noiseThresholdDb?: number,
-    minSilenceSec?: number,
-    paddingSec?: number,
-  ): Promise<any> {
-    if (!filePath) {
-      return JSON.stringify({ success: false, error: 'filePath is required' });
-    }
-    try {
-      const analysis = await analyzeAudioEditPoints(
-        filePath,
-        noiseThresholdDb ?? -30,
-        minSilenceSec ?? 0.5,
-        paddingSec ?? 0.1,
-      );
-      return JSON.stringify(analysis);
-    } catch (e: any) {
-      return JSON.stringify({ success: false, error: `audio analysis failed: ${e?.message || e}` });
-    }
   }
 
   private async analyzeSpeechEditPoints(
@@ -1813,43 +1353,6 @@ export class PremiereProTools {
   /** Read the media path of the first clip on the lowest non-empty video track.
    *  Saves the caller a list_project_items round trip in the common case where
    *  the sequence is one long take. */
-  private async resolveSequenceMedia(sequenceId?: string): Promise<string | null> {
-    const script = `
-      try {
-        var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
-        if (!sequence) return JSON.stringify({ success: false });
-        for (var t = 0; t < sequence.videoTracks.numTracks; t++) {
-          var track = sequence.videoTracks[t];
-          for (var c = 0; c < track.clips.numItems; c++) {
-            try {
-              var mp = track.clips[c].projectItem ? track.clips[c].projectItem.getMediaPath() : "";
-              if (mp) return JSON.stringify({ success: true, mediaPath: mp });
-            } catch (inner) {}
-          }
-        }
-        for (var a = 0; a < sequence.audioTracks.numTracks; a++) {
-          var atrack = sequence.audioTracks[a];
-          for (var ac = 0; ac < atrack.clips.numItems; ac++) {
-            try {
-              var amp = atrack.clips[ac].projectItem ? atrack.clips[ac].projectItem.getMediaPath() : "";
-              if (amp) return JSON.stringify({ success: true, mediaPath: amp });
-            } catch (inner2) {}
-          }
-        }
-        return JSON.stringify({ success: false });
-      } catch (e) {
-        return JSON.stringify({ success: false });
-      }
-    `;
-    try {
-      const raw: any = await this.bridge.executeScript(script);
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return parsed?.success ? String(parsed.mediaPath) : null;
-    } catch {
-      return null;
-    }
-  }
-
   /**
    * Analyze -> plan -> (approve) -> cut -> caption, in one call.
    *
@@ -1857,220 +1360,10 @@ export class PremiereProTools {
    * is a judgement call about someone's speech, so the plan is shown first and
    * the caller opts in to applying it.
    */
-  private async autoCutEdit(args: any): Promise<any> {
-    const dryRun = args.dryRun !== false;
-    const wantCaptions = args.captions !== false;
-    const steps: string[] = [];
-
-    const seq = await this.resolveSequence(args.sequenceId);
-    if ('error' in seq) return JSON.stringify({ success: false, stage: 'resolve-sequence', error: seq.error });
-    steps.push(`sequence: ${seq.name}`);
-
-    const mediaPath = args.mediaPath || (await this.resolveSequenceMedia(args.sequenceId));
-    if (!mediaPath) {
-      return JSON.stringify({
-        success: false,
-        stage: 'resolve-media',
-        error: 'could not determine which media file to analyze. Pass mediaPath (see list_project_items -> mediaPath).',
-      });
-    }
-    steps.push(`media: ${mediaPath}`);
-
-    // 1. Analyze speech.
-    let analysis: any;
-    try {
-      analysis = await analyzeSpeechEditPoints(
-        mediaPath,
-        args.model ?? 'small',
-        args.language ?? 'ko',
-        args.similarityThreshold ?? 0.75,
-        args.minGapSec ?? 0.6,
-        args.paddingSec ?? 0.15,
-        args.removeFillers ?? false,
-        args.fillerWords && args.fillerWords.length ? args.fillerWords : DEFAULT_FILLERS,
-        args.longGapSec ?? 5,
-        args.lookbackSec ?? 25,
-      );
-    } catch (e: any) {
-      return JSON.stringify({ success: false, stage: 'analyze', error: `speech analysis failed: ${e?.message || e}` });
-    }
-    if (!analysis.success) {
-      return JSON.stringify({ success: false, stage: 'analyze', error: analysis.error });
-    }
-    if (!analysis.suggestedRemovals.length) {
-      return JSON.stringify({
-        success: true,
-        stage: 'analyze',
-        message: 'nothing to cut — no silences, repeated takes or fillers passed the thresholds',
-        stats: analysis.stats,
-        steps,
-      });
-    }
-    steps.push(
-      `found ${analysis.stats.silenceGapCount} silence gaps, ${analysis.stats.duplicateCount} repeated takes, ` +
-      `${analysis.stats.fillerCount} fillers = ${analysis.stats.totalRemovableSec}s removable`,
-    );
-
-    // 2. Cut (or plan the cut).
-    const removalsRaw: any = await this.applyTimelineRemovals(
-      seq.id,
-      analysis.suggestedRemovals.map((r: any) => ({ start: r.start, end: r.end })),
-      args.videoTrackIndices,
-      args.audioTrackIndices,
-      true,
-      dryRun,
-      true,
-      mediaPath,
-      args.backup !== false,
-    );
-    const removals = typeof removalsRaw === 'string' ? JSON.parse(removalsRaw) : removalsRaw;
-    if (!removals.success) {
-      return JSON.stringify({ success: false, stage: 'apply', error: removals.error, skipped: removals.skipped, steps });
-    }
-    steps.push(dryRun ? `planned ${removals.spanCount} cuts` : `applied ${removals.spanCount} cuts`);
-
-    if (dryRun) {
-      return JSON.stringify({
-        success: true,
-        dryRun: true,
-        message: `Plan ready: ${removals.spanCount} cuts removing about ${analysis.stats.totalRemovableSec}s. Re-run with dryRun:false to apply.`,
-        sequence: seq.name,
-        mediaPath,
-        analysis: {
-          stats: analysis.stats,
-          duplicateTakes: analysis.duplicateTakes.slice(0, 10),
-          fillerWords: analysis.fillerWords.slice(0, 20),
-        },
-        cutPlan: removals.plan?.slice(0, 40),
-        cutPlanTruncated: (removals.plan?.length ?? 0) > 40,
-        skipped: removals.skipped,
-        steps,
-      });
-    }
-
-    // 3. Captions, from the same cached transcript.
-    let captions: any = null;
-    if (wantCaptions) {
-      const capRaw: any = await this.exportCaptions(
-        mediaPath,
-        undefined,
-        args.captionFormat ?? 'srt',
-        args.scriptPath,
-        args.model ?? 'base',
-        args.language ?? 'ko',
-        undefined, undefined, undefined, undefined, undefined,
-      );
-      captions = typeof capRaw === 'string' ? JSON.parse(capRaw) : capRaw;
-      steps.push(captions?.success ? `captions: ${captions.outputPath}` : `captions failed: ${captions?.error}`);
-    }
-
-    return JSON.stringify({
-      success: true,
-      dryRun: false,
-      message: `Cut ${removals.spanCount} spans from "${seq.name}"` + (removals.inSync ? '' : ' — SYNC WARNING, check the timeline'),
-      sequence: seq.name,
-      mediaPath,
-      backupSequenceName: removals.backupSequenceName ?? null,
-      removedClipCount: removals.removedClipCount,
-      removedSecPerTrack: removals.removedSecPerTrack,
-      inSync: removals.inSync,
-      syncWarning: removals.syncWarning,
-      skippedCount: removals.skippedCount,
-      skipped: removals.skipped,
-      captions,
-      steps,
-      // Captions describe the ORIGINAL take; the timeline no longer matches it.
-      captionNote: wantCaptions && captions?.success
-        ? 'Caption times follow the uncut media. Re-run export_captions against the exported cut if you need them aligned to the new edit.'
-        : undefined,
-    });
-  }
-
   /**
    * Cut a short-form clip out of a range: subsequence the range, then reframe it
    * to a vertical/square aspect.
    */
-  private async makeShort(
-    start?: number,
-    end?: number,
-    sequenceId?: string,
-    name?: string,
-    aspect: '9:16' | '1:1' | '4:5' | '16:9' = '9:16',
-    motionPreset?: string,
-    reframe = true,
-  ): Promise<any> {
-    if (typeof start !== 'number' || typeof end !== 'number') {
-      return JSON.stringify({ success: false, error: 'start and end (timeline seconds) are required' });
-    }
-    if (end <= start) {
-      return JSON.stringify({ success: false, error: 'end must be greater than start' });
-    }
-
-    const seq = await this.resolveSequence(sequenceId);
-    if ('error' in seq) return JSON.stringify({ success: false, error: seq.error });
-
-    const shortName = name || `${seq.name} short ${Math.round(start)}-${Math.round(end)}`;
-
-    // Set in/out over the range, then let Premiere build the subsequence.
-    const script = `
-      try {
-        var sequence = __findSequence(${JSON.stringify(seq.id)});
-        if (!sequence) return JSON.stringify({ success: false, error: "sequence not found" });
-        app.project.openSequence(sequence.sequenceID);
-        var active = app.project.activeSequence;
-
-        active.setInPoint(${start});
-        active.setOutPoint(${end});
-
-        var before = app.project.sequences.numSequences;
-        active.createSubsequence(true);
-        var after = app.project.sequences.numSequences;
-        if (after <= before) return JSON.stringify({ success: false, error: "subsequence was not created" });
-
-        var created = app.project.sequences[after - 1];
-        created.name = ${JSON.stringify(shortName)};
-        return JSON.stringify({ success: true, sequenceId: created.sequenceID, name: created.name });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-
-    const subRaw: any = await this.bridge.executeScript(script);
-    const sub = typeof subRaw === 'string' ? JSON.parse(subRaw) : subRaw;
-    if (!sub || !sub.success) {
-      return JSON.stringify({ success: false, stage: 'subsequence', error: sub?.error || 'subsequence failed' });
-    }
-
-    if (!reframe || aspect === '16:9') {
-      return JSON.stringify({
-        success: true,
-        message: `Created "${sub.name}" from ${start}s-${end}s`,
-        sequenceId: sub.sequenceId,
-        name: sub.name,
-        aspect: '16:9',
-        reframed: false,
-      });
-    }
-
-    const ratios: Record<string, [number, number]> = { '9:16': [9, 16], '1:1': [1, 1], '4:5': [4, 5] };
-    const [num, den] = ratios[aspect] ?? [9, 16];
-
-    const reframeRaw: any = await this.autoReframeSequence(sub.sequenceId, num, den, motionPreset ?? 'default', `${sub.name} ${aspect}`);
-    const reframed = typeof reframeRaw === 'string' ? JSON.parse(reframeRaw) : reframeRaw;
-
-    return JSON.stringify({
-      success: true,
-      message: `Created "${sub.name}" from ${start}s-${end}s and reframed to ${aspect}`,
-      sourceSequence: seq.name,
-      subsequenceId: sub.sequenceId,
-      subsequenceName: sub.name,
-      aspect,
-      reframed: Boolean(reframed?.success),
-      reframeResult: reframed,
-      hint: 'Use export_sequence to render it, and export_captions if the short needs burned-in subtitles.',
-    });
-  }
-
   private async applyTimelineRemovals(
     sequenceId?: string,
     removals?: Array<{ start: number; end: number }>,
@@ -2447,33 +1740,6 @@ export class PremiereProTools {
 
 
 
-  private async addTransitionToClip(clipId: string, transitionName: string, position: 'start' | 'end', duration: number): Promise<any> {
-    const atEnd = position === 'end';
-    const script = `
-      try {
-        app.enableQE();
-        var info = __findClip("${clipId}");
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var qeSeq = qe.project.getActiveSequence();
-        var qeTrack = info.trackType === 'video' ? qeSeq.getVideoTrackAt(info.trackIndex) : qeSeq.getAudioTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
-        var transition = info.trackType === 'video'
-          ? qe.project.getVideoTransitionByName("${transitionName}")
-          : qe.project.getAudioTransitionByName("${transitionName}");
-        if (!transition) return JSON.stringify({ success: false, error: "Transition not found: ${transitionName}" });
-        var seq = app.project.activeSequence;
-        var fps = seq.timebase ? (254016000000 / parseInt(seq.timebase, 10)) : 30;
-        var frames = Math.round(${duration} * fps);
-        qeClip.addTransition(transition, ${atEnd}, frames + ":00", "0:00", 0.5, true, true);
-        return JSON.stringify({ success: true, message: "Transition added at ${position}", transitionName: "${transitionName}", duration: ${duration} });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: "QE DOM error: " + e.toString() });
-      }
-    `;
-
-    return await this.bridge.executeScript(script);
-  }
-
   // Audio Operations Implementation
   /**
    * High-level ducking helper. Computes a keyframe curve and delegates to
@@ -2492,53 +1758,6 @@ export class PremiereProTools {
    *
    * Replaces the manual Sprint 3 "8 keyframes per video" pattern.
    */
-  private async setupDucking(
-    clipId: string,
-    baseDb: number,
-    duckingWindows: Array<{ startTime: number; endTime: number; duckedDb: number }>,
-    fadeSeconds: number = 0.2,
-    clipStartTime?: number,
-    clipEndTime?: number
-  ): Promise<any> {
-    const fade = fadeSeconds ?? 0.2;
-    const start = clipStartTime ?? 0;
-    const lastWindow = duckingWindows.length > 0 ? duckingWindows[duckingWindows.length - 1] : undefined;
-    const end = clipEndTime ?? (lastWindow ? lastWindow.endTime + 1 : start + 1);
-
-    // Collect all keyframes and dedupe-by-time (later writes win for same time)
-    const map = new Map<number, number>();
-    const upsert = (t: number, db: number) => {
-      // Quantize to ms to avoid duplicate-but-not-equal floats
-      const key = Math.round(t * 1000) / 1000;
-      map.set(key, db);
-    };
-
-    upsert(start, baseDb);
-
-    for (const w of duckingWindows) {
-      upsert(Math.max(start, w.startTime - fade), baseDb);
-      upsert(w.startTime, w.duckedDb);
-      upsert(w.endTime, w.duckedDb);
-      upsert(Math.min(end, w.endTime + fade), baseDb);
-    }
-
-    upsert(end, baseDb);
-
-    const keyframes = Array.from(map.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([time, level]) => ({ time, level }));
-
-    const result = await this.addAudioKeyframes(clipId, keyframes);
-    return {
-      ...(typeof result === 'object' && result !== null ? result : {}),
-      ducking_windows: duckingWindows.length,
-      fade_seconds: fade,
-      keyframes_emitted: keyframes.length,
-      base_db: baseDb,
-      computed_keyframes: keyframes,
-    };
-  }
-
   //
   // Sets the audio clip volume in dB (relative gain on the clip's Volume component, NOT track mixer).
   //
@@ -2549,604 +1768,9 @@ export class PremiereProTools {
   //     linear scale (1.0 = 0 dB, 1.4454 = +3.2 dB). Conversion: linear = 10^(dB/20).
   //   - Now supports localized component names (Spanish "Volumen", English "Volume", others).
   //   - On not-found, returns a dump of clip components+properties for debugging.
-  private async adjustAudioLevels(clipId: string, level: number): Promise<any> {
-    const script = `
-      try {
-        var info = __findClip("${clipId}");
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var clip = info.clip;
-
-        // Localized display names for the Volume component
-        var VOLUME_NAMES = ["Volume", "Volumen", "Lautstärke", "Volume", "音量"];
-        // Localized display names for the Level property inside Volume
-        var LEVEL_NAMES  = ["Level", "Nivel", "Pegel", "Niveau", "Livello", "音量"];
-
-        function isOneOf(name, list) {
-          for (var n = 0; n < list.length; n++) { if (name === list[n]) return true; }
-          return false;
-        }
-
-        // Build dump for debug fallback
-        var dump = [];
-        var volumeComp = null;
-        for (var i = 0; i < clip.components.numItems; i++) {
-          var comp = clip.components[i];
-          var compName = String(comp.displayName);
-          var propsList = [];
-          for (var j = 0; j < comp.properties.numItems; j++) {
-            propsList.push(String(comp.properties[j].displayName));
-          }
-          dump.push({ idx: i, component: compName, properties: propsList });
-          if (!volumeComp && isOneOf(compName, VOLUME_NAMES)) {
-            volumeComp = comp;
-          }
-        }
-        if (!volumeComp) {
-          return JSON.stringify({
-            success: false,
-            error: "Volume component not found on clip",
-            components_dump: dump
-          });
-        }
-
-        var levelProp = null;
-        for (var j = 0; j < volumeComp.properties.numItems; j++) {
-          var pName = String(volumeComp.properties[j].displayName);
-          if (isOneOf(pName, LEVEL_NAMES)) {
-            levelProp = volumeComp.properties[j];
-            break;
-          }
-        }
-        if (!levelProp) {
-          return JSON.stringify({
-            success: false,
-            error: "Level property not found inside Volume component",
-            volume_component: String(volumeComp.displayName),
-            properties_in_volume: dump.length > 0 ? dump : []
-          });
-        }
-
-        // CALIBRATION (empirical, Premiere Pro 2026 macOS, locale es_ES):
-        //   Premiere's clip Volume Level property uses a linear amplitude scale where the
-        //   displayed "0 dB" in the Effects Controls panel corresponds to internal linear value
-        //   ~0.17783. The relationship is: linear = 0.17783 × 10^(dB/20),
-        //   equivalently: linear = 10^((dB - 15) / 20).
-        //   Verified by measurement: setting linear = 1.4454 (which standard audio convention
-        //   says is +3.2 dB) actually produced ~+13 dB of broadcast loudness gain. With this
-        //   calibrated formula, requesting +3.2 dB now sets linear = 0.2571 ≈ matches Premiere's
-        //   displayed value.
-        var DB_CALIBRATION_OFFSET = 15;  // Premiere ES-locale, PrPro 2026.x
-        var dB = ${level};
-        var linearValue = Math.pow(10, (dB - DB_CALIBRATION_OFFSET) / 20);
-        var oldLinear = levelProp.getValue();
-        var oldDB = (oldLinear > 0)
-          ? (20 * Math.log(oldLinear) / Math.log(10) + DB_CALIBRATION_OFFSET)
-          : -Infinity;
-        levelProp.setValue(linearValue, true);
-
-        return JSON.stringify({
-          success: true,
-          message: "Audio level adjusted (clip Volume component, locale-aware, calibrated dB scale)",
-          clipId: "${clipId}",
-          requestedDB: dB,
-          oldLinearValue: oldLinear,
-          oldDB: oldDB,
-          newLinearValue: linearValue,
-          newDB: dB,
-          calibrationOffset: DB_CALIBRATION_OFFSET,
-          volumeComponent: String(volumeComp.displayName),
-          levelProperty: String(levelProp.displayName)
-        });
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-
-    return await this.bridge.executeScript(script);
-  }
-
-  private async addAudioKeyframes(clipId: string, keyframes: Array<{time: number, level: number}>): Promise<any> {
-    // CALIBRATION (matches adjustAudioLevels): Premiere's clip Volume Level property is linear amplitude.
-    // The displayed "0 dB" in Effects Controls corresponds to internal linear value ~0.17783.
-    // Relationship: linear = 10^((dB - 15) / 20). Verified empirically on Premiere Pro 2026 macOS es_ES.
-    const DB_CALIBRATION_OFFSET = 15;
-    const keyframeCode = keyframes.map(kf => {
-      const linearValue = Math.pow(10, (kf.level - DB_CALIBRATION_OFFSET) / 20);
-      return `
-        try {
-          levelProp.addKey(${kf.time});
-          levelProp.setValueAtKey(${kf.time}, ${linearValue}, true);
-          addedKeyframes.push({ time: ${kf.time}, level: ${kf.level}, linearValue: ${linearValue} });
-        } catch (e2) {
-          failedKeyframes.push({ time: ${kf.time}, level: ${kf.level}, error: e2.toString() });
-        }
-    `;
-    }).join('\n');
-
-    const script = `
-      try {
-        var info = __findClip(${JSON.stringify(clipId)});
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var clip = info.clip;
-
-        // Locale-aware Volume component / Level property detection (matches adjustAudioLevels patch).
-        // Without this, the function fails with "Volume property not found" on non-English Premiere
-        // installs (e.g., Spanish "Volumen"/"Nivel", German "Lautstärke"/"Pegel", etc.).
-        var VOLUME_NAMES = ["Volume", "Volumen", "Lautstärke", "Volume", "音量"];
-        var LEVEL_NAMES  = ["Level", "Nivel", "Pegel", "Niveau", "Livello", "音量"];
-        function isOneOf(name, list) {
-          for (var n = 0; n < list.length; n++) { if (name === list[n]) return true; }
-          return false;
-        }
-
-        var volumeComp = null;
-        var dump = [];
-        for (var i = 0; i < clip.components.numItems; i++) {
-          var comp = clip.components[i];
-          var compName = String(comp.displayName);
-          var propsList = [];
-          for (var j = 0; j < comp.properties.numItems; j++) {
-            propsList.push(String(comp.properties[j].displayName));
-          }
-          dump.push({ idx: i, component: compName, properties: propsList });
-          if (!volumeComp && isOneOf(compName, VOLUME_NAMES)) {
-            volumeComp = comp;
-          }
-        }
-        if (!volumeComp) {
-          return JSON.stringify({
-            success: false,
-            error: "Volume component not found on clip (locale-aware lookup failed)",
-            components_dump: dump
-          });
-        }
-
-        var levelProp = null;
-        for (var k = 0; k < volumeComp.properties.numItems; k++) {
-          var pName = String(volumeComp.properties[k].displayName);
-          if (isOneOf(pName, LEVEL_NAMES)) {
-            levelProp = volumeComp.properties[k];
-            break;
-          }
-        }
-        if (!levelProp) {
-          return JSON.stringify({
-            success: false,
-            error: "Level property not found inside Volume component",
-            volume_component: String(volumeComp.displayName)
-          });
-        }
-
-        levelProp.setTimeVarying(true);
-        var addedKeyframes = [];
-        var failedKeyframes = [];
-        ${keyframeCode}
-        return JSON.stringify({
-          success: true,
-          message: "Audio keyframes added (locale-aware Volume detection, calibrated dB scale)",
-          clipId: ${JSON.stringify(clipId)},
-          volumeComponent: String(volumeComp.displayName),
-          levelProperty: String(levelProp.displayName),
-          calibrationOffset: ${DB_CALIBRATION_OFFSET},
-          addedKeyframes: addedKeyframes,
-          failedKeyframes: failedKeyframes,
-          totalKeyframes: addedKeyframes.length
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-
-    return await this.bridge.executeScript(script);
-  }
-
 
   // Text and Graphics Implementation
-  private async addTextOverlay(args: any): Promise<any> {
-    if (args.mogrtPath) {
-      // FIX vs upstream: upstream silently ignored args.text; the MOGRT was imported but
-      // its text properties stayed at default placeholders ("Su nombre aquí", etc.)
-      // This version:
-      //   1. importMGT (existing)
-      //   2. After import, get trackItem.getMGTComponent() — the special MGT component
-      //      that exposes the parameters defined in the Essential Graphics template
-      //   3. Dump those properties for debugging (so callers see what's available)
-      //   4. If args.text is provided, attempt to set it by:
-      //      a. The first text-typed property whose value JSON-parses to {mTextString: ...}
-      //      b. Or by displayName match against args.textPropertyName (optional override)
-      //   Premiere stores text values as JSON: '{"mTextString":"...", ...}'
-      const textJson = args.text !== undefined ? JSON.stringify(args.text) : 'null';
-      // When set, the script restricts the write to the property whose displayName matches
-      // (instead of running the auto-detect). text2/text3/text4 are ignored in override mode
-      // — the override targets a single field by name.
-      const textPropNameJson = args.textPropertyName !== undefined
-        ? JSON.stringify(args.textPropertyName)
-        : 'null';
-      const script = `
-        try {
-          var sequence = __findSequence(${JSON.stringify(args.sequenceId)});
-          if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
-          var timeTicks = __secondsToTicks(${args.startTime});
-          var trackItem = sequence.importMGT(${JSON.stringify(args.mogrtPath)}, timeTicks, ${args.trackIndex}, 0);
-          if (!trackItem) return JSON.stringify({ success: false, error: "Failed to import MOGRT. Ensure the .mogrt file exists." });
-
-          // First, probe ALL plausible MGT-access APIs (so we know what's available)
-          var apiProbe = {};
-          apiProbe.hasGetMGTComponent = (typeof trackItem.getMGTComponent === "function");
-          apiProbe.hasGetMGT = (typeof trackItem.getMGT === "function");
-          apiProbe.hasGetMogrtComponent = (typeof trackItem.getMogrtComponent === "function");
-          apiProbe.hasGetComponentParameters = (typeof trackItem.getComponentParameters === "function");
-          // App-level
-          apiProbe.appHasMOGRTAPI = (app.project && typeof app.project.openMGT === "function");
-          // Try calling getMGTComponent and capture more detail
-          if (apiProbe.hasGetMGTComponent) {
-            try {
-              var mgtTry = trackItem.getMGTComponent();
-              apiProbe.getMGTComponent_returned = (mgtTry === null) ? "null" : (typeof mgtTry);
-              if (mgtTry) {
-                apiProbe.getMGTComponent_displayName = String(mgtTry.displayName || "");
-                apiProbe.getMGTComponent_propertyCount = (mgtTry.properties ? mgtTry.properties.numItems : -1);
-                // Dump first 3 properties of MGT comp
-                var mgtPropsSample = [];
-                if (mgtTry.properties) {
-                  for (var mp = 0; mp < Math.min(5, mgtTry.properties.numItems); mp++) {
-                    var mprop = mgtTry.properties[mp];
-                    var mval = null;
-                    try { mval = mprop.getValue(); } catch (eMg) { mval = "<getValue threw>"; }
-                    mgtPropsSample.push({
-                      index: mp,
-                      displayName: String(mprop.displayName),
-                      valueType: typeof mval,
-                      valuePreview: (typeof mval === "string" ? mval.substring(0, 80) : mval)
-                    });
-                  }
-                }
-                apiProbe.getMGTComponent_propertiesSample = mgtPropsSample;
-              }
-            } catch (eMG) {
-              apiProbe.getMGTComponent_threw = eMG.toString();
-            }
-          }
-          // Probe trackItem.name (some MOGRT-specific stuff might surface here)
-          try { apiProbe.trackItemName = String(trackItem.name); } catch (e) {}
-          // Probe sequence-level methods
-          try { apiProbe.sequenceHasGetSelection = (typeof sequence.getSelection === "function"); } catch (e) {}
-
-          // Iterate ALL components of the imported trackItem (MOGRT params live as
-          // properties on one of its components, not always via getMGTComponent)
-          var componentsDump = [];
-          var textPropsFound = [];  // {compIndex, propIndex, displayName, currentValue}
-          for (var ci = 0; ci < trackItem.components.numItems; ci++) {
-            var comp = trackItem.components[ci];
-            var compName = String(comp.displayName);
-            var compMatch = (comp.matchName !== undefined) ? String(comp.matchName) : "";
-            var compProps = [];
-            for (var i = 0; i < comp.properties.numItems; i++) {
-              var prop = comp.properties[i];
-              var dn = String(prop.displayName);
-              var val = null;
-              try { val = prop.getValue(); } catch (eV) { val = "<getValue threw>"; }
-              var truncatedVal = (typeof val === "string" ? val.substring(0, 250) : val);
-              compProps.push({ index: i, displayName: dn, value: truncatedVal });
-              // Heuristic: text properties contain "mTextString" in their JSON value
-              if (typeof val === "string" && val.indexOf("mTextString") >= 0) {
-                textPropsFound.push({ compIndex: ci, propIndex: i, compDisplayName: compName, propDisplayName: dn, currentValue: val });
-              }
-            }
-            componentsDump.push({ index: ci, displayName: compName, matchName: compMatch, propertyCount: compProps.length, properties: compProps });
-          }
-
-          // Set custom text(s). Each "AE.ADBE Text" component in the MOGRT exposes its
-          // editable text as property 0 (display name "Texto de origen" / "Source Text").
-          // Only one setValue per property — raw_string strategy worked in earlier tests; no
-          // JSON wrapping (that broke rendering).
-          //
-          // Inputs:
-          //   args.text  → first text component (e.g., main title in Basic Lower Third)
-          //   args.text2 → second text component (e.g., subtitle)
-          //   args.text3 → third (if MOGRT has more)
-          //   ...
-          // Auto-collected from numbered keys.
-          var textsByIndex = [];
-          if (${textJson} !== null) textsByIndex.push(${textJson});
-          ${args.text2 !== undefined ? `textsByIndex.push(${JSON.stringify(args.text2)});` : ''}
-          ${args.text3 !== undefined ? `textsByIndex.push(${JSON.stringify(args.text3)});` : ''}
-          ${args.text4 !== undefined ? `textsByIndex.push(${JSON.stringify(args.text4)});` : ''}
-          var setResults = [];
-          if (textsByIndex.length > 0) {
-            // PREFERRED PATH: getMGTComponent() for AE-exported MOGRTs (Adobe-CEP canonical).
-            // Properties exposed there are the Essential Graphics parameters and contain
-            // FULL JSON values that ARE editable.
-            // FALLBACK PATH: iterate trackItem.components for "AE.ADBE Text" — only works for
-            // some MOGRTs and tokens are opaque single-char references in Premiere-native MOGRTs.
-            var textComps = [];
-            var textCompsViaMGT = false;
-            var textPropNameOverride = ${textPropNameJson};
-            // OVERRIDE PATH: caller named a specific property by displayName.
-            // Search both the MGT component and all trackItem components for an exact
-            // displayName match, then restrict textComps to that single hit.
-            // text2/text3/text4 are ignored in override mode — caller targeted one field.
-            if (textPropNameOverride) {
-              try {
-                var mgtCompO = trackItem.getMGTComponent();
-                if (mgtCompO && mgtCompO.properties) {
-                  for (var miO = 0; miO < mgtCompO.properties.numItems; miO++) {
-                    var mpO = mgtCompO.properties[miO];
-                    if (String(mpO.displayName) === textPropNameOverride) {
-                      textComps.push({ comp: mgtCompO, compIndex: -1, prop: mpO, propIndex: miO, displayName: String(mpO.displayName) });
-                      textCompsViaMGT = true;
-                      break;
-                    }
-                  }
-                }
-              } catch (eOMG) {}
-              if (textComps.length === 0) {
-                for (var ciO = 0; ciO < trackItem.components.numItems && textComps.length === 0; ciO++) {
-                  var cO = trackItem.components[ciO];
-                  for (var piO = 0; piO < cO.properties.numItems; piO++) {
-                    var pO = cO.properties[piO];
-                    if (String(pO.displayName) === textPropNameOverride) {
-                      textComps.push({ comp: cO, compIndex: ciO, prop: pO, propIndex: piO, displayName: String(pO.displayName) });
-                      break;
-                    }
-                  }
-                }
-              }
-              if (textComps.length === 0) {
-                return JSON.stringify({
-                  success: false,
-                  error: "textPropertyName override did not match any property displayName: " + textPropNameOverride,
-                  componentCount: componentsDump.length,
-                  components: componentsDump
-                });
-              }
-              // In override mode keep only the first text (named-target write).
-              textsByIndex = [textsByIndex[0]];
-              setResults.push({ _strategy: "textPropertyName_override", overrideName: textPropNameOverride });
-            }
-            // AUTO-DETECT PATH (only when no override).
-            if (textComps.length === 0) {
-              try {
-                var mgtComp = trackItem.getMGTComponent();
-                if (mgtComp && mgtComp.properties) {
-                  for (var mi = 0; mi < mgtComp.properties.numItems; mi++) {
-                    var mp = mgtComp.properties[mi];
-                    var mpVal = null;
-                    try { mpVal = mp.getValue(); } catch (eMPv) {}
-                    // A "text" param has a JSON string value containing textEditValue or mTextString
-                    if (typeof mpVal === "string" && mpVal.length > 50 &&
-                        (mpVal.indexOf("textEditValue") >= 0 || mpVal.indexOf("mTextString") >= 0 || mpVal.indexOf("capPropTextRunCount") >= 0)) {
-                      textComps.push({ comp: mgtComp, compIndex: -1, prop: mp, propIndex: mi, displayName: String(mp.displayName) });
-                    }
-                  }
-                  if (textComps.length > 0) textCompsViaMGT = true;
-                }
-              } catch (eMGTC) {}
-              // Fallback to component iteration if MGT didn't yield text params
-              if (textComps.length === 0) {
-                for (var ci3 = 0; ci3 < trackItem.components.numItems; ci3++) {
-                  var c3 = trackItem.components[ci3];
-                  var mn = (c3.matchName !== undefined) ? String(c3.matchName) : "";
-                  if (mn === "AE.ADBE Text") {
-                    textComps.push({ comp: c3, compIndex: ci3, prop: c3.properties[0], propIndex: 0, displayName: "Source Text (legacy)" });
-                  }
-                }
-              }
-              setResults.push({ _strategy: textCompsViaMGT ? "getMGTComponent" : "components_fallback", textCompsFound: textComps.length });
-            }
-            for (var ti2 = 0; ti2 < textsByIndex.length && ti2 < textComps.length; ti2++) {
-              var tc = textComps[ti2];
-              var sourceTextProp = tc.prop;
-              var newText = String(textsByIndex[ti2]);
-              try {
-                // Source Text in Premiere/After Effects MOGRTs is stored as:
-                //   <4 bytes binary header> + <JSON payload of mTextParam structure>
-                // Source: Adobe Community (Kurt_Clark) + Adobe-CEP samples + reproduced
-                // independently across multiple Premiere versions (incl. 2026).
-                // The agent investigation confirmed this format. Direct setValue("text")
-                // stores the value but the renderer cannot parse it → no visual update.
-                // Correct mutation: parse JSON (skipping header), patch
-                // mTextParam.mStyleSheet.mText, re-prepend header, setValue(...).
-                var rawVal = sourceTextProp.getValue();
-                var rawValStr = String(rawVal);
-                var rawValLen = rawValStr.length;
-                var headerBytes = "";
-                var jsonStr = "";
-                var textObj = null;
-                var parseStrategy = "";
-                // Strategy 1: 4-byte header + JSON
-                try {
-                  headerBytes = rawValStr.substring(0, 4);
-                  jsonStr = rawValStr.substring(4);
-                  textObj = JSON.parse(jsonStr);
-                  parseStrategy = "header4+json";
-                } catch (eP1) {
-                  // Strategy 2: pure JSON (AE 14.3+ no header)
-                  try {
-                    textObj = JSON.parse(rawValStr);
-                    headerBytes = "";
-                    parseStrategy = "pure_json";
-                  } catch (eP2) {
-                    setResults.push({
-                      textIndex: ti2, compIndex: tc.compIndex, requestedText: newText,
-                      ok: false,
-                      error: "Both JSON parse strategies failed",
-                      rawValLength: rawValLen,
-                      rawValPreview: rawValStr.substring(0, 50),
-                      parseError1: eP1.toString(),
-                      parseError2: eP2.toString()
-                    });
-                    continue;
-                  }
-                }
-                // Mutate the text in the proper nested path(s)
-                var mutated = [];
-                if (textObj.mTextParam && textObj.mTextParam.mStyleSheet) {
-                  textObj.mTextParam.mStyleSheet.mText = newText;
-                  mutated.push("mTextParam.mStyleSheet.mText");
-                }
-                // AE 14.3+ alternate: textEditValue + fontTextRunLength
-                if (textObj.textEditValue !== undefined) {
-                  textObj.textEditValue = newText;
-                  textObj.fontTextRunLength = [newText.length];
-                  mutated.push("textEditValue+fontTextRunLength");
-                }
-                if (mutated.length === 0) {
-                  setResults.push({
-                    textIndex: ti2, compIndex: tc.compIndex, requestedText: newText,
-                    ok: false,
-                    error: "Parsed JSON but no known text field found",
-                    parseStrategy: parseStrategy,
-                    jsonKeys: (function(){ var ks=[]; for (var k in textObj) ks.push(k); return ks; })()
-                  });
-                  continue;
-                }
-                // Re-encode + write back
-                var newRawVal = headerBytes + JSON.stringify(textObj);
-                sourceTextProp.setValue(newRawVal, true);
-                // Verify
-                var afterRaw = "";
-                try { afterRaw = String(sourceTextProp.getValue()); } catch (eVA) {}
-                var afterParseOk = false;
-                var afterText = "";
-                try {
-                  var afterObj = JSON.parse(afterRaw.substring(headerBytes.length));
-                  if (afterObj.mTextParam && afterObj.mTextParam.mStyleSheet) {
-                    afterText = afterObj.mTextParam.mStyleSheet.mText;
-                    afterParseOk = true;
-                  } else if (afterObj.textEditValue) {
-                    afterText = afterObj.textEditValue;
-                    afterParseOk = true;
-                  }
-                } catch (eAP) {}
-                setResults.push({
-                  textIndex: ti2,
-                  compIndex: tc.compIndex,
-                  requestedText: newText,
-                  parseStrategy: parseStrategy,
-                  fieldsMutated: mutated,
-                  rawValLength: rawValLen,
-                  newRawValLength: newRawVal.length,
-                  readbackParseOk: afterParseOk,
-                  readbackText: afterText,
-                  ok: (afterText === newText)
-                });
-              } catch (eS) {
-                setResults.push({ textIndex: ti2, compIndex: tc.compIndex, requestedText: newText, ok: false, error: eS.toString() });
-              }
-            }
-            if (textComps.length === 0) {
-              setResults.push({ ok: false, error: "No 'AE.ADBE Text' components found in MOGRT" });
-            } else if (textsByIndex.length > textComps.length) {
-              setResults.push({ ok: false, warning: "More texts requested (" + textsByIndex.length + ") than text components in MOGRT (" + textComps.length + ")" });
-            }
-          }
-
-          return JSON.stringify({
-            success: true,
-            message: "MOGRT imported as text overlay",
-            clipId: trackItem.nodeId,
-            apiProbe: apiProbe,
-            componentCount: componentsDump.length,
-            components: componentsDump,
-            textPropsAutoDetected: textPropsFound,
-            textInjectionResults: setResults
-          });
-        } catch (e) {
-          return JSON.stringify({ success: false, error: e.toString() });
-        }
-      `;
-      return await this.bridge.executeScript(script);
-    }
-
-    // Fallback: try legacy title approach
-    const script = `
-      try {
-        var sequence = __findSequence(${JSON.stringify(args.sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
-        return JSON.stringify({
-          success: false,
-          error: "Text overlay requires a MOGRT file path. Pass mogrtPath pointing to a .mogrt template file.",
-          note: "Legacy titles (app.project.createNewTitle) are not supported in current Premiere Pro ExtendScript API."
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-    return await this.bridge.executeScript(script);
-  }
-
   // Color Correction Implementation
-  private async colorCorrect(clipId: string, adjustments: any): Promise<any> {
-    const paramCode = [
-      adjustments.brightness !== undefined ? `if (p.displayName === "Brightness") p.setValue(${adjustments.brightness}, true);` : '',
-      adjustments.contrast !== undefined ? `if (p.displayName === "Contrast") p.setValue(${adjustments.contrast}, true);` : '',
-      adjustments.saturation !== undefined ? `if (p.displayName === "Saturation") p.setValue(${adjustments.saturation}, true);` : '',
-      adjustments.hue !== undefined ? `if (p.displayName === "Hue") p.setValue(${adjustments.hue}, true);` : '',
-      adjustments.temperature !== undefined ? `if (p.displayName === "Temperature") p.setValue(${adjustments.temperature}, true);` : '',
-      adjustments.tint !== undefined ? `if (p.displayName === "Tint") p.setValue(${adjustments.tint}, true);` : '',
-    ].filter(Boolean).join('\n              ');
-
-    const script = `
-      try {
-        app.enableQE();
-        var info = __findClip("${clipId}");
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var qeSeq = qe.project.getActiveSequence();
-        var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
-        var effect = qe.project.getVideoEffectByName("Lumetri Color");
-        if (!effect) return JSON.stringify({ success: false, error: "Lumetri Color effect not found" });
-        qeClip.addVideoEffect(effect);
-        var clip = info.clip;
-        var lastComp = clip.components[clip.components.numItems - 1];
-        for (var j = 0; j < lastComp.properties.numItems; j++) {
-          var p = lastComp.properties[j];
-          try {
-            ${paramCode}
-          } catch (e2) {}
-        }
-        return JSON.stringify({ success: true, message: "Color correction applied", clipId: "${clipId}" });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-
-    return await this.bridge.executeScript(script);
-  }
-
-  private async applyLut(clipId: string, lutPath: string, _intensity = 100): Promise<any> {
-    const script = `
-      try {
-        app.enableQE();
-        var info = __findClip("${clipId}");
-        if (!info) return JSON.stringify({ success: false, error: "Clip not found" });
-        var qeSeq = qe.project.getActiveSequence();
-        var qeTrack = qeSeq.getVideoTrackAt(info.trackIndex);
-        var qeClip = qeTrack.getItemAt(info.clipIndex);
-        var effect = qe.project.getVideoEffectByName("Lumetri Color");
-        if (!effect) return JSON.stringify({ success: false, error: "Lumetri Color not found" });
-        qeClip.addVideoEffect(effect);
-        var clip = info.clip;
-        var lastComp = clip.components[clip.components.numItems - 1];
-        for (var j = 0; j < lastComp.properties.numItems; j++) {
-          var p = lastComp.properties[j];
-          try {
-            if (p.displayName === "Input LUT") p.setValue("${lutPath}", true);
-          } catch (e2) {}
-        }
-        return JSON.stringify({ success: true, message: "LUT applied", clipId: "${clipId}", lutPath: "${lutPath}" });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-
-    return await this.bridge.executeScript(script);
-  }
-
   // Export and Rendering Implementation
   private async exportSequence(sequenceId: string, outputPath: string, presetPath?: string, format?: string, quality?: string, resolution?: string): Promise<any> {
     // app.encoder.encodeSequence() expects an absolute path to a .epr preset file.
@@ -3289,79 +1913,7 @@ export class PremiereProTools {
   // ============================================
 
   // Markers Implementation
-  private async addMarker(_sequenceId: string, time: number, name: string, comment?: string, color?: string, duration?: number): Promise<any> {
-    const script = `
-      try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "No active sequence"
-          });
-        } else {
-          var marker = sequence.markers.createMarker(${time});
-          marker.name = ${JSON.stringify(name)};
-          ${comment ? `marker.comments = ${JSON.stringify(comment)};` : ''}
-          ${color ? `marker.setColorByIndex(${color === 'red' ? '5' : color === 'green' ? '3' : color === 'blue' ? '1' : '0'});` : ''}
-          ${duration && duration > 0 ? `marker.end = ${time + duration};` : ''}
 
-          return JSON.stringify({
-            success: true,
-            markerId: marker.guid,
-            message: "Marker added successfully"
-          });
-        }
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-    return await this.bridge.executeScript(script);
-  }
-
-
-
-  private async listMarkers(_sequenceId: string): Promise<any> {
-    const script = `
-      try {
-        var sequence = app.project.activeSequence;
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "No active sequence"
-          });
-        } else {
-          var markers = [];
-          for (var i = 0; i < sequence.markers.numMarkers; i++) {
-            var marker = sequence.markers[i];
-            markers.push({
-              id: marker.guid,
-              name: marker.name,
-              comment: marker.comments,
-              start: marker.start.seconds,
-              end: marker.end.seconds,
-              duration: marker.end.seconds - marker.start.seconds,
-              type: marker.type
-            });
-          }
-
-          return JSON.stringify({
-            success: true,
-            markers: markers,
-            count: markers.length
-          });
-        }
-      } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
-      }
-    `;
-    return await this.bridge.executeScript(script);
-  }
 
   // Track Management Implementation
   // FIX vs upstream: upstream called qeSeq.addTracks(numVideo, numAudio, 0) which interpreted
@@ -3499,51 +2051,7 @@ export class PremiereProTools {
   // Clip Lookup Implementation
 
   // Auto Reframe Implementation
-  private async autoReframeSequence(sequenceId: string, numerator: number, denominator: number, motionPreset?: string, newName?: string): Promise<any> {
-    const preset = motionPreset || 'default';
-    const script = `
-      try {
-        var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
-        var reframedName = ${newName ? JSON.stringify(newName) : 'sequence.name + " Reframed"'};
-        sequence.autoReframeSequence(${numerator}, ${denominator}, ${JSON.stringify(preset)}, reframedName, false);
-        return JSON.stringify({
-          success: true,
-          message: "Sequence auto-reframed",
-          aspectRatio: ${numerator} + ":" + ${denominator},
-          motionPreset: ${JSON.stringify(preset)},
-          newName: reframedName
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-    return await this.bridge.executeScript(script);
-  }
-
   // Scene Edit Detection Implementation
-  private async detectSceneEdits(sequenceId: string, action?: string, applyCutsToLinkedAudio?: boolean, sensitivity?: string): Promise<any> {
-    const actionVal = action || 'CreateMarkers';
-    const audioVal = applyCutsToLinkedAudio !== false;
-    const sensitivityVal = sensitivity || 'Medium';
-    const script = `
-      try {
-        var sequence = __findSequence(${JSON.stringify(sequenceId)});
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
-        sequence.performSceneEditDetectionOnSelection(${JSON.stringify(actionVal)}, ${audioVal}, ${JSON.stringify(sensitivityVal)});
-        return JSON.stringify({
-          success: true,
-          message: "Scene edit detection performed",
-          action: ${JSON.stringify(actionVal)},
-          sensitivity: ${JSON.stringify(sensitivityVal)}
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-    return await this.bridge.executeScript(script);
-  }
-
   // Caption Track Implementation
   private async createCaptionTrack(sequenceId: string, projectItemId: string, startTime?: number, captionFormat?: string): Promise<any> {
     const startTimeVal = startTime || 0;
@@ -3619,26 +2127,6 @@ export class PremiereProTools {
   // Import Sequences From Project Implementation
 
   // Create Subsequence Implementation
-  private async createSubsequence(sequenceId: string, ignoreTrackTargeting?: boolean): Promise<any> {
-    const ignoreTargeting = ignoreTrackTargeting ? 'true' : 'false';
-    const script = `
-      try {
-        var seq = __findSequence(${JSON.stringify(sequenceId)});
-        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
-        var subseq = seq.createSubsequence(${ignoreTargeting});
-        return JSON.stringify({
-          success: true,
-          message: "Subsequence created",
-          sequenceId: subseq.sequenceID,
-          name: subseq.name
-        });
-      } catch (e) {
-        return JSON.stringify({ success: false, error: e.toString() });
-      }
-    `;
-    return await this.bridge.executeScript(script);
-  }
-
   // Import MOGRT Implementation
 
   // Import MOGRT From Library Implementation
