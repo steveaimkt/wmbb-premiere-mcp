@@ -9,6 +9,7 @@ import { z } from 'zod';
 import type { PremiereProTransport } from '../bridge/types.js';
 import { Logger } from '../utils/logger.js';
 import { analyzeSpeechEditPoints } from '../utils/speechAnalysis.js';
+import { detectFreeze } from '../utils/freezeDetect.js';
 import { buildCues, serializeCues } from '../utils/captions.js';
 import { findTextSpans, DEFAULT_FILLERS } from '../utils/cutEditing.js';
 import { transcribeAudio } from '../utils/whisperRunner.js';
@@ -155,6 +156,38 @@ export class PremiereProTools {
           lookbackSec: z.number().optional().describe('Seconds to look back when matching a retake to its flubbed take. Default 25 — long enough to bridge a take that breaks mid-sentence, pauses while the speaker resets the screen, and is delivered again. The removal then runs to the start of the retake, taking that dead air with it.'),
           removeFillers: z.boolean().optional().describe('Also flag filler words ("음", "uh", "um") for removal. Default false.'),
           fillerWords: z.array(z.string()).optional().describe(`Filler tokens to cut. Defaults to the unambiguous set: ${DEFAULT_FILLERS.join(', ')}. Korean single syllables like "그"/"뭐"/"이제" are excluded by default because they are also ordinary words — add them only when you know the take.`)
+        })
+      },
+      {
+        name: 'analyze_sequence_cuts',
+        description: 'THE cut-edit entry point. Point it at a sequence and it does the whole plan in one call: resolves the sequence\'s media, transcribes the speech (Whisper, word-level, cached), and returns categorized cut proposals — duplicates/retakes, pauses, and the held-back intro/outro/longGaps — exactly like analyze_speech_edit_points, but keyed to the sequence instead of a file path you have to find yourself. It ALSO runs ffmpeg freezedetect on every long silent gap and tags it static (frozen screen, safe to cut) or active (a live on-screen demo, keep) so demos are protected automatically. Output is compact by default (proposals + per-gap screenState + stats, no giant word list) so it never overflows. Feed the approved spans to apply_sequence_cuts. Read-only: nothing is cut here.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence to analyze. Defaults to the active sequence.'),
+          mediaPath: z.string().optional().describe('Override the media file to analyze. Normally omit — it is resolved from the sequence\'s clips.'),
+          model: z.string().optional().describe('Whisper model. Default "small" (Korean-safe; "base"/"tiny" drift and can miss the opening). Use "medium"/"large-v3" for English or frame-tight timing.'),
+          language: z.string().optional().describe('Language code (e.g. "ko", "en") or "auto". Default "ko".'),
+          minGapSec: z.number().optional().describe('Silence gap (s) between words to flag. Default 0.6.'),
+          paddingSec: z.number().optional().describe('Breath kept at each end of a trimmed gap. Default 0.15.'),
+          longGapSec: z.number().optional().describe('Gaps ≥ this go to the longGaps category and get a freeze check. Default 5.'),
+          lookbackSec: z.number().optional().describe('Retake match window (s). Default 25.'),
+          removeFillers: z.boolean().optional().describe('Also flag filler words. Default false.'),
+          checkFrames: z.boolean().optional().describe('Run freezedetect on long gaps to tell demo (active) from dead air (static). Default true. Needs the media to have video.'),
+          includeTranscript: z.boolean().optional().describe('Include the full word-level transcript in the response. Default false (compact — avoids token overflow).')
+        })
+      },
+      {
+        name: 'apply_sequence_cuts',
+        description: 'Applies approved cut spans to a sequence, safely: duplicates the sequence as a backup, ripple-deletes the spans (right-to-left so timecodes stay valid, A/V linked so they never desync), then RE-QUERIES the timeline and reports the measured result length vs expected. This is the verified, reversible half of the workflow — success is judged from the re-queried length, not from the call returning. Pass the spans you approved from analyze_sequence_cuts. Spans are timeline seconds by default; set sourceTimes for source-clip spans. Destructive but backed up.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence to cut. Defaults to the active sequence.'),
+          removals: z.array(z.object({
+            start: z.number().describe('Span start (timeline seconds, or source-clip seconds when sourceTimes=true).'),
+            end: z.number().describe('Span end.')
+          })).describe('Approved spans to remove.'),
+          sourceTimes: z.boolean().optional().describe('Set true if the spans are source-clip times (from analyze_sequence_cuts on an untrimmed clip). Requires sourceMediaPath. Default false (timeline times).'),
+          sourceMediaPath: z.string().optional().describe('Media file the source-time spans refer to. Required when sourceTimes=true.'),
+          backup: z.boolean().optional().describe('Duplicate the sequence before cutting. Default true — leave it on.'),
+          expectedDurationSec: z.number().optional().describe('Optional expected result length; the report flags if the measured length is off by more than 2s.')
         })
       },
       {
@@ -389,6 +422,10 @@ export class PremiereProTools {
           return await this.razorTimelineAtTime(args.sequenceId, args.time, args.videoTrackIndices, args.audioTrackIndices);
         case 'analyze_speech_edit_points':
           return await this.analyzeSpeechEditPoints(args.filePath, args.model, args.language, args.similarityThreshold, args.minGapSec, args.paddingSec, args.removeFillers, args.fillerWords, args.longGapSec, args.lookbackSec);
+        case 'analyze_sequence_cuts':
+          return await this.analyzeSequenceCuts(args);
+        case 'apply_sequence_cuts':
+          return await this.applySequenceCuts(args);
         case 'proofread_transcript':
           return await this.proofreadTranscript(args.filePath, args.scriptPath, args.model, args.language, args.confidenceThreshold, args.correctionThreshold);
         case 'export_captions':
@@ -1047,6 +1084,185 @@ export class PremiereProTools {
     `;
 
     return await this.bridge.executeScript(script);
+  }
+
+  /** Find a media file backing a sequence — the first clip with a resolvable
+   *  media path, video track then audio. Lets the cut tools key off a sequence
+   *  id instead of making the caller hunt for the file in list_project_items. */
+  private async resolveSequenceMedia(sequenceId?: string): Promise<string | null> {
+    const script = `
+      try {
+        var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
+        if (!sequence) return JSON.stringify({ success: false });
+        for (var t = 0; t < sequence.videoTracks.numTracks; t++) {
+          var track = sequence.videoTracks[t];
+          for (var c = 0; c < track.clips.numItems; c++) {
+            try {
+              var mp = track.clips[c].projectItem ? track.clips[c].projectItem.getMediaPath() : "";
+              if (mp) return JSON.stringify({ success: true, mediaPath: mp });
+            } catch (inner) {}
+          }
+        }
+        for (var a = 0; a < sequence.audioTracks.numTracks; a++) {
+          var atrack = sequence.audioTracks[a];
+          for (var ac = 0; ac < atrack.clips.numItems; ac++) {
+            try {
+              var amp = atrack.clips[ac].projectItem ? atrack.clips[ac].projectItem.getMediaPath() : "";
+              if (amp) return JSON.stringify({ success: true, mediaPath: amp });
+            } catch (inner2) {}
+          }
+        }
+        return JSON.stringify({ success: false });
+      } catch (e) {
+        return JSON.stringify({ success: false });
+      }
+    `;
+    try {
+      const raw: any = await this.bridge.executeScript(script);
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return parsed?.success ? String(parsed.mediaPath) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * THE cut-edit entry point: sequence in, categorized + freeze-checked cut plan out.
+   *
+   * Resolves the sequence media, runs the speech analysis (transcribe → categorized
+   * proposals), then runs freezedetect on each long silent gap so demos (active
+   * screen) are told apart from dead air (static) automatically. Compact by default.
+   */
+  private async analyzeSequenceCuts(args: any): Promise<any> {
+    const mediaPath = args.mediaPath || (await this.resolveSequenceMedia(args.sequenceId));
+    if (!mediaPath) {
+      return JSON.stringify({
+        success: false,
+        stage: 'resolve-media',
+        error: 'Could not find a media file for this sequence. Pass mediaPath, or check the sequence has a clip with linked media (list_project_items → mediaPath).',
+      });
+    }
+
+    let analysis: any;
+    try {
+      analysis = await analyzeSpeechEditPoints(
+        mediaPath,
+        args.model ?? 'small',
+        args.language ?? 'ko',
+        0.75,
+        args.minGapSec ?? 0.6,
+        args.paddingSec ?? 0.15,
+        args.removeFillers ?? false,
+        DEFAULT_FILLERS,
+        args.longGapSec ?? 5,
+        args.lookbackSec ?? 25,
+      );
+    } catch (e: any) {
+      return JSON.stringify({ success: false, stage: 'analyze', error: `speech analysis failed: ${e?.message || e}` });
+    }
+    if (!analysis.success) {
+      return JSON.stringify({ success: false, stage: 'analyze', error: analysis.error, warnings: analysis.warnings });
+    }
+
+    // Freeze-check the long gaps: static (frozen) = safe to cut, active = live demo.
+    const checkFrames = args.checkFrames !== false;
+    const longGapGroup = (analysis.proposals || []).find((p: any) => p.kind === 'longGaps');
+    const frameChecks: any[] = [];
+    if (checkFrames && longGapGroup) {
+      for (const span of longGapGroup.spans) {
+        try {
+          const v = await detectFreeze(mediaPath, span.start, span.end);
+          frameChecks.push({ start: span.start, end: span.end, duration: span.duration, screenState: v.error ? 'unknown' : v.screenState, longestFreezeFraction: v.longestFreezeFraction, freezeSegments: v.freezeSegments, ...(v.error ? { note: v.error } : {}) });
+        } catch (e: any) {
+          frameChecks.push({ start: span.start, end: span.end, duration: span.duration, screenState: 'unknown', note: String(e?.message || e) });
+        }
+      }
+    }
+
+    // Compact proposals: drop the per-span arrays' verbosity is already small;
+    // the big payload is the transcript, omitted unless asked.
+    const compactProposals = (analysis.proposals || []).map((p: any) => ({
+      kind: p.kind, label: p.label, count: p.spans.length, totalSec: p.totalSec,
+      recommended: p.recommended, note: p.note, spans: p.spans,
+    }));
+
+    const out: any = {
+      success: true,
+      sequenceId: args.sequenceId ?? null,
+      mediaPath,
+      duration: analysis.duration,
+      language: analysis.language,
+      warnings: analysis.warnings,
+      proposals: compactProposals,
+      frameChecks, // per long-gap static/active verdict
+      suggestedRemovals: analysis.suggestedRemovals, // recommended-only (timeline-safe subset)
+      stats: analysis.stats,
+      note: 'suggestedRemovals covers only the recommended groups (duplicates + pauses [+ fillers]). Review intro/outro/longGaps yourself — use frameChecks: static longGaps are safe to add, active ones are demos to keep. Times are source-clip seconds; pass sourceTimes=true to apply_sequence_cuts if the timeline clip is untrimmed.',
+    };
+    if (args.includeTranscript) out.segments = analysis.segments;
+    return JSON.stringify(out);
+  }
+
+  /** Apply approved spans with backup + ripple + re-queried verification. */
+  private async applySequenceCuts(args: any): Promise<any> {
+    const removals = Array.isArray(args.removals) ? args.removals : [];
+    if (!removals.length) {
+      return JSON.stringify({ success: false, error: 'removals is required (the approved spans to cut).' });
+    }
+    // Measure before.
+    const before = await this.getSequenceDurationSec(args.sequenceId);
+
+    let applyRaw: any;
+    try {
+      applyRaw = await this.applyTimelineRemovals(
+        args.sequenceId, removals, undefined, undefined, true, false,
+        args.sourceTimes ?? false, args.sourceMediaPath, args.backup !== false,
+      );
+    } catch (e: any) {
+      return JSON.stringify({ success: false, stage: 'apply', error: `apply failed: ${e?.message || e}` });
+    }
+    const apply = typeof applyRaw === 'string' ? JSON.parse(applyRaw) : applyRaw;
+    if (!apply.success) return JSON.stringify({ success: false, stage: 'apply', ...apply });
+
+    // Measure after (re-query is the judge, not the apply response).
+    const after = await this.getSequenceDurationSec(args.sequenceId);
+    const removed = removals.reduce((a: number, r: any) => a + Math.max(0, r.end - r.start), 0);
+    const expected = args.expectedDurationSec ?? (before != null ? before - removed : null);
+    const drift = expected != null && after != null ? Math.round((after - expected) * 1000) / 1000 : null;
+    const verified = drift != null ? Math.abs(drift) <= 2 : null;
+
+    return JSON.stringify({
+      success: true,
+      verified,
+      beforeSec: before,
+      afterSec: after,
+      removedPlannedSec: Math.round(removed * 1000) / 1000,
+      expectedSec: expected != null ? Math.round(expected * 1000) / 1000 : null,
+      driftSec: drift,
+      fullyApplied: apply.fullyApplied ?? null,
+      inSync: apply.inSync ?? null,
+      backupSequenceName: apply.backupSequenceName ?? null,
+      removedClipCount: apply.removedClipCount ?? null,
+      note: verified === false
+        ? 'MEASURED LENGTH IS OFF by more than 2s from expected — stop and inspect; the backup sequence is intact.'
+        : 'Measured length matches expected. Judged from re-queried duration, not the apply response.',
+    });
+  }
+
+  /** Re-query a sequence's duration in seconds (the judge for apply verification). */
+  private async getSequenceDurationSec(sequenceId?: string): Promise<number | null> {
+    const script = `
+      try {
+        var s = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
+        if (!s) return JSON.stringify({ success: false });
+        return JSON.stringify({ success: true, seconds: s.end ? s.end.seconds : (s.zeroPoint ? 0 : 0) });
+      } catch (e) { return JSON.stringify({ success: false }); }
+    `;
+    try {
+      const raw: any = await this.bridge.executeScript(script);
+      const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return p?.success ? Number(p.seconds) : null;
+    } catch { return null; }
   }
 
   private async analyzeSpeechEditPoints(
