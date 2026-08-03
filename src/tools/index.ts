@@ -81,9 +81,27 @@ export class PremiereProTools {
       },
       {
         name: 'list_sequence_tracks',
-        description: 'Lists all video and audio tracks in a specific sequence with their properties and clips.',
+        description: 'Lists the tracks of a sequence with every clip, and — this is the part that matters for rebuilding an edit — each clip\'s SOURCE in/out points alongside its timeline position. That pairing is the whole source→timeline map, so captions can be re-derived from an existing transcript without transcribing again. Also returns `verify`: measured length, per-track gaps, and V/A clip parity. `verify` is the authority on what the timeline actually contains — `list_sequences`.duration reports a stale value mid-edit and must not be used to judge a cut. Use compact:true on long timelines to get `verify` plus first/last clips only, which keeps a several-hundred-clip sequence inside the token budget.',
         inputSchema: z.object({
-          sequenceId: z.string().describe('The ID of the sequence to list tracks for')
+          sequenceId: z.string().describe('The ID of the sequence to list tracks for'),
+          includeSourceTimes: z.boolean().optional().describe('Include each clip\'s source inPoint/outPoint. Default true — this is what makes the response a source→timeline map.'),
+          compact: z.boolean().optional().describe('Return `verify` plus only the first/last clip of each track. Use on timelines with hundreds of clips. Default false.')
+        })
+      },
+      {
+        name: 'insert_clip',
+        description: 'Places a span of a project item onto a sequence track — the operation the other tools cannot do, since they only remove, razor and trim. Use it for a cold open, for restoring a section that was cut too aggressively, or for B-roll. mode:"insert" ripples everything after the insert point to the right (nothing is overwritten); mode:"overwrite" replaces what is already there. Video and its linked audio are placed together by default. Returns the re-queried timeline (same `verify` block as list_sequence_tracks) so the result is judged from measured state, not from the call returning.',
+        inputSchema: z.object({
+          projectItemId: z.string().optional().describe('Project item to place. Defaults to the item whose media path is sourceMediaPath.'),
+          sourceMediaPath: z.string().optional().describe('Media file path; the matching project item is looked up. Use instead of projectItemId.'),
+          sourceIn: z.number().describe('Source in-point in seconds.'),
+          sourceOut: z.number().describe('Source out-point in seconds.'),
+          timelineAt: z.number().describe('Timeline position in seconds where the span is placed.'),
+          mode: z.enum(['insert', 'overwrite']).optional().describe('"insert" ripples later clips right (default). "overwrite" replaces in place.'),
+          sequenceId: z.string().optional().describe('Target sequence. Defaults to the active sequence.'),
+          videoTrackIndex: z.number().optional().describe('Video track index. Default 0 (V1).'),
+          audioTrackIndex: z.number().optional().describe('Audio track index. Default 0 (A1).'),
+          withAudio: z.boolean().optional().describe('Place the linked audio too. Default true.')
         })
       },
       {
@@ -405,7 +423,9 @@ export class PremiereProTools {
         case 'list_sequences':
           return await this.listSequences();
         case 'list_sequence_tracks':
-          return await this.listSequenceTracks(args.sequenceId);
+          return await this.listSequenceTracks(args.sequenceId, args.includeSourceTimes, args.compact);
+        case 'insert_clip':
+          return await this.insertClip(args);
         case 'get_project_info':
           return await this.getProjectInfo();
         case 'save_project':
@@ -565,87 +585,299 @@ export class PremiereProTools {
     return await this.bridge.executeScript(script);
   }
 
-  private async listSequenceTracks(sequenceId: string): Promise<any> {
+  private async listSequenceTracks(sequenceId: string, includeSourceTimes = true, compact = false): Promise<any> {
+    const withSrc = includeSourceTimes !== false;
     const script = `
       try {
         var sequence = __findSequence("${sequenceId}");
-        if (!sequence) {
-          sequence = app.project.activeSequence;
-        }
-        if (!sequence) {
-          return JSON.stringify({
-            success: false,
-            error: "Sequence not found"
-          });
+        if (!sequence) sequence = app.project.activeSequence;
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+
+        var WITH_SRC = ${withSrc};
+        var COMPACT = ${compact === true};
+
+        function readTrack(track, index, label) {
+          var clips = [];
+          var gaps = [];
+          var prevEnd = null;
+          var covered = 0;
+          for (var j = 0; j < track.clips.numItems; j++) {
+            var clip = track.clips[j];
+            var entry = {
+              id: clip.nodeId,
+              name: clip.name,
+              startTime: clip.start.seconds,
+              endTime: clip.end.seconds,
+              duration: clip.duration.seconds
+            };
+            if (WITH_SRC) {
+              // Source in/out. Paired with startTime this is the source -> timeline map.
+              entry.inPoint = clip.inPoint ? clip.inPoint.seconds : null;
+              entry.outPoint = clip.outPoint ? clip.outPoint.seconds : null;
+            }
+            covered += clip.duration.seconds;
+            if (prevEnd !== null && clip.start.seconds - prevEnd > 0.0005) {
+              gaps.push({ after: j - 1, start: prevEnd, end: clip.start.seconds, duration: clip.start.seconds - prevEnd });
+            }
+            prevEnd = clip.end.seconds;
+            clips.push(entry);
+          }
+          var out = {
+            index: index,
+            name: track.name || label + " " + (index + 1),
+            clipCount: clips.length,
+            firstStart: clips.length ? clips[0].startTime : null,
+            lastEnd: clips.length ? clips[clips.length - 1].endTime : null,
+            coveredSec: covered,
+            gapCount: gaps.length,
+            gaps: gaps
+          };
+          if (COMPACT) {
+            out.clips = clips.length > 2 ? [clips[0], clips[clips.length - 1]] : clips;
+            out.clipsTruncated = clips.length > 2;
+          } else {
+            out.clips = clips;
+            out.clipsTruncated = false;
+          }
+          return out;
         }
 
         var videoTracks = [];
         var audioTracks = [];
+        for (var i = 0; i < sequence.videoTracks.numTracks; i++) videoTracks.push(readTrack(sequence.videoTracks[i], i, "Video"));
+        for (var i = 0; i < sequence.audioTracks.numTracks; i++) audioTracks.push(readTrack(sequence.audioTracks[i], i, "Audio"));
 
-        for (var i = 0; i < sequence.videoTracks.numTracks; i++) {
-          var track = sequence.videoTracks[i];
-          var clips = [];
+        // --- verify: the authority on what the timeline holds ---
+        var usedV = [], usedA = [];
+        for (var i = 0; i < videoTracks.length; i++) if (videoTracks[i].clipCount > 0) usedV.push(videoTracks[i]);
+        for (var i = 0; i < audioTracks.length; i++) if (audioTracks[i].clipCount > 0) usedA.push(audioTracks[i]);
 
-          for (var j = 0; j < track.clips.numItems; j++) {
-            var clip = track.clips[j];
-            clips.push({
-              id: clip.nodeId,
-              name: clip.name,
-              startTime: clip.start.seconds,
-              endTime: clip.end.seconds,
-              duration: clip.duration.seconds
-            });
+        var measuredEnd = 0;
+        var totalGaps = 0;
+        for (var i = 0; i < usedV.length; i++) { if (usedV[i].lastEnd > measuredEnd) measuredEnd = usedV[i].lastEnd; totalGaps += usedV[i].gapCount; }
+        for (var i = 0; i < usedA.length; i++) { if (usedA[i].lastEnd > measuredEnd) measuredEnd = usedA[i].lastEnd; totalGaps += usedA[i].gapCount; }
+
+        var avParity = true, parityNote = null;
+        if (usedV.length === 1 && usedA.length === 1) {
+          if (usedV[0].clipCount !== usedA[0].clipCount) {
+            avParity = false;
+            parityNote = "V1 has " + usedV[0].clipCount + " clips, A1 has " + usedA[0].clipCount + " - A/V may be out of sync";
+          } else if (Math.abs(usedV[0].lastEnd - usedA[0].lastEnd) > 0.0005) {
+            avParity = false;
+            parityNote = "V1 ends at " + usedV[0].lastEnd + "s, A1 at " + usedA[0].lastEnd + "s";
           }
-
-          videoTracks.push({
-            index: i,
-            name: track.name || "Video " + (i + 1),
-            clips: clips,
-            clipCount: clips.length
-          });
+        } else if (usedV.length > 1 || usedA.length > 1) {
+          parityNote = "more than one populated track per type - parity not checked";
         }
 
-        for (var i = 0; i < sequence.audioTracks.numTracks; i++) {
-          var track = sequence.audioTracks[i];
-          var clips = [];
-
-          for (var j = 0; j < track.clips.numItems; j++) {
-            var clip = track.clips[j];
-            clips.push({
-              id: clip.nodeId,
-              name: clip.name,
-              startTime: clip.start.seconds,
-              endTime: clip.end.seconds,
-              duration: clip.duration.seconds
-            });
-          }
-
-          audioTracks.push({
-            index: i,
-            name: track.name || "Audio " + (i + 1),
-            clips: clips,
-            clipCount: clips.length
-          });
-        }
+        var reported = sequence.end ? __ticksToSeconds(sequence.end) : null;
 
         return JSON.stringify({
           success: true,
-          sequenceId: "${sequenceId}",
+          sequenceId: sequence.sequenceID,
           sequenceName: sequence.name,
+          verify: {
+            measuredEndSec: measuredEnd,
+            reportedDurationSec: reported,
+            durationMatchesClips: (reported === null) ? null : (Math.abs(reported - measuredEnd) <= 0.05),
+            populatedVideoTracks: usedV.length,
+            populatedAudioTracks: usedA.length,
+            gapCount: totalGaps,
+            contiguous: totalGaps === 0,
+            avParity: avParity,
+            note: parityNote
+          },
           videoTracks: videoTracks,
           audioTracks: audioTracks,
           totalVideoTracks: videoTracks.length,
           totalAudioTracks: audioTracks.length
         });
       } catch (e) {
-        return JSON.stringify({
-          success: false,
-          error: e.toString()
-        });
+        return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
 
     return await this.bridge.executeScript(script);
+  }
+
+  /**
+   * Place a source span onto a track. This is the only additive edit the server
+   * offers; everything else removes, razors or trims. Without it a cold open or a
+   * restored section has to be done by hand in Premiere.
+   *
+   * insertClip/overwriteClip take the projectItem's current in/out, so the span is
+   * set on the item first and restored afterwards — otherwise the next insert
+   * inherits whatever the last one left behind.
+   */
+  private async insertClip(args: any): Promise<any> {
+    const {
+      projectItemId, sourceMediaPath, sourceIn, sourceOut, timelineAt,
+      mode = 'insert', sequenceId, videoTrackIndex = 0, audioTrackIndex = 0, withAudio = true,
+    } = args ?? {};
+
+    if (typeof sourceIn !== 'number' || typeof sourceOut !== 'number' || sourceOut <= sourceIn) {
+      return JSON.stringify({ success: false, error: 'sourceIn/sourceOut required, and sourceOut must be greater than sourceIn' });
+    }
+    if (typeof timelineAt !== 'number' || timelineAt < 0) {
+      return JSON.stringify({ success: false, error: 'timelineAt (seconds) is required' });
+    }
+    if (!projectItemId && !sourceMediaPath) {
+      return JSON.stringify({ success: false, error: 'pass projectItemId or sourceMediaPath' });
+    }
+
+    const script = `
+      try {
+        var sequence = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
+        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+
+        var item = null;
+        ${projectItemId ? `item = __findProjectItem(${JSON.stringify(projectItemId)});` : ''}
+        if (!item) {
+          var wantPath = ${JSON.stringify(sourceMediaPath || '')};
+          if (wantPath) {
+            function walkFind(node) {
+              if (node.getMediaPath && __samePath(node.getMediaPath(), wantPath)) return node;
+              if (node.children) {
+                for (var i = 0; i < node.children.numItems; i++) {
+                  var f = walkFind(node.children[i]);
+                  if (f) return f;
+                }
+              }
+              return null;
+            }
+            item = walkFind(app.project.rootItem);
+          }
+        }
+        if (!item) return JSON.stringify({ success: false, error: "project item not found - check projectItemId / sourceMediaPath" });
+
+        var vIdx = ${videoTrackIndex}, aIdx = ${audioTrackIndex};
+        if (vIdx < 0 || vIdx >= sequence.videoTracks.numTracks) return JSON.stringify({ success: false, error: "videoTrackIndex out of range" });
+        if (${withAudio !== false} && (aIdx < 0 || aIdx >= sequence.audioTracks.numTracks)) return JSON.stringify({ success: false, error: "audioTrackIndex out of range" });
+
+        // Remember the item's in/out so the next caller is not affected.
+        var prevIn = null, prevOut = null;
+        try { prevIn = item.getInPoint ? item.getInPoint().ticks : null; } catch (e) {}
+        try { prevOut = item.getOutPoint ? item.getOutPoint().ticks : null; } catch (e) {}
+
+        item.setInPoint(__secondsToTicks(${sourceIn}), 4);
+        item.setOutPoint(__secondsToTicks(${sourceOut}), 4);
+
+        function endOf(track) {
+          var last = 0;
+          for (var i = 0; i < track.clips.numItems; i++) {
+            if (track.clips[i].end.seconds > last) last = track.clips[i].end.seconds;
+          }
+          return last;
+        }
+        var beforeV = endOf(sequence.videoTracks[vIdx]);
+        var beforeVCount = sequence.videoTracks[vIdx].clips.numItems;
+
+        var at = __secondsToTicks(${timelineAt});
+        var isInsert = ${JSON.stringify(mode)} !== "overwrite";
+        var placed = [];
+
+        if (isInsert) {
+          sequence.videoTracks[vIdx].insertClip(item, at);
+        } else {
+          sequence.videoTracks[vIdx].overwriteClip(item, at);
+        }
+        placed.push("video" + vIdx);
+
+        // Video insert carries linked audio on most builds. Only place audio
+        // separately when the audio track did not change.
+        if (${withAudio !== false}) {
+          var aCount = sequence.audioTracks[aIdx].clips.numItems;
+          var expected = beforeVCount;
+          var vCount = sequence.videoTracks[vIdx].clips.numItems;
+          if (aCount < vCount) {
+            try {
+              if (isInsert) sequence.audioTracks[aIdx].insertClip(item, at);
+              else sequence.audioTracks[aIdx].overwriteClip(item, at);
+              placed.push("audio" + aIdx);
+            } catch (e) {}
+          } else {
+            placed.push("audio" + aIdx + " (linked)");
+          }
+        }
+
+        if (prevIn !== null) { try { item.setInPoint(prevIn, 4); } catch (e) {} }
+        if (prevOut !== null) { try { item.setOutPoint(prevOut, 4); } catch (e) {} }
+
+        var afterV = endOf(sequence.videoTracks[vIdx]);
+        return JSON.stringify({
+          success: true,
+          mode: isInsert ? "insert" : "overwrite",
+          sequenceId: sequence.sequenceID,
+          sequenceName: sequence.name,
+          projectItem: item.name,
+          sourceIn: ${sourceIn},
+          sourceOut: ${sourceOut},
+          spanSec: ${sourceOut - sourceIn},
+          timelineAt: ${timelineAt},
+          tracksPlaced: placed,
+          videoEndBefore: beforeV,
+          videoEndAfter: afterV,
+          videoGrewBySec: afterV - beforeV
+        });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `;
+
+    const raw: any = await this.bridge.executeScript(script);
+    return await this.withVerification(raw, sequenceId, {
+      expectedGrowthSec: sourceOut - sourceIn,
+      growthKey: 'videoGrewBySec',
+    });
+  }
+
+  /**
+   * Re-query the timeline after a mutation and attach the measured state.
+   * A change tool reporting success is not evidence the edit landed — an apply
+   * has come back fullyApplied:true while the timeline held a 27s hole. The
+   * caller should read `verify`, not the mutation's own summary.
+   */
+  private async withVerification(
+    raw: any,
+    sequenceId: string | undefined,
+    opts: { expectedGrowthSec?: number; expectedRemovedSec?: number; growthKey?: string } = {},
+  ): Promise<any> {
+    let parsed: any;
+    try { parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return raw; }
+    if (!parsed || parsed.success === false) return typeof raw === 'string' ? raw : JSON.stringify(raw);
+
+    let verify: any = null;
+    try {
+      const tracksRaw: any = await this.listSequenceTracks(sequenceId ?? parsed.sequenceId ?? '', true, true);
+      const tracks = typeof tracksRaw === 'string' ? JSON.parse(tracksRaw) : tracksRaw;
+      verify = tracks?.verify ?? null;
+    } catch { /* verification is best-effort; the mutation result still returns */ }
+
+    if (!verify) return JSON.stringify({ ...parsed, verify: null, verifyNote: 'could not re-query the timeline - check it manually' });
+
+    const problems: string[] = [];
+    if (verify.gapCount > 0) problems.push(`${verify.gapCount} gap(s) in the timeline - the ripple did not close`);
+    if (verify.avParity === false) problems.push(verify.note || 'A/V out of parity');
+    if (typeof opts.expectedGrowthSec === 'number' && opts.growthKey) {
+      const grew = Number(parsed[opts.growthKey]);
+      if (Number.isFinite(grew) && Math.abs(grew - opts.expectedGrowthSec) > 0.05) {
+        problems.push(`expected +${opts.expectedGrowthSec.toFixed(3)}s, timeline grew ${grew.toFixed(3)}s`);
+      }
+    }
+    if (typeof opts.expectedRemovedSec === 'number' && typeof parsed.lengthBeforeSec === 'number') {
+      const actual = parsed.lengthBeforeSec - verify.measuredEndSec;
+      if (Math.abs(actual - opts.expectedRemovedSec) > 0.05) {
+        problems.push(`expected -${opts.expectedRemovedSec.toFixed(3)}s, timeline lost ${actual.toFixed(3)}s`);
+      }
+    }
+
+    return JSON.stringify({
+      ...parsed,
+      success: problems.length === 0 ? parsed.success : false,
+      verify,
+      verified: problems.length === 0,
+      verifyProblems: problems.length ? problems : null,
+    });
   }
 
   private async getProjectInfo(): Promise<any> {
@@ -1932,14 +2164,25 @@ export class PremiereProTools {
     `;
 
     const raw: any = await this.bridge.executeScript(script);
-    if (!backupSequenceName) return raw;
-    // Surface the backup name so the caller knows what to restore.
-    try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return JSON.stringify({ ...parsed, backupSequenceName });
-    } catch {
-      return raw;
+    if (dryRun) {
+      if (!backupSequenceName) return raw;
+      try {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return JSON.stringify({ ...parsed, backupSequenceName });
+      } catch { return raw; }
     }
+
+    // A ripple can leave a hole behind while still reporting fullyApplied:true.
+    // Re-query and let `verify` decide, so the caller never has to take the
+    // mutation's own summary on trust.
+    let withBackup: any = raw;
+    if (backupSequenceName) {
+      try {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        withBackup = JSON.stringify({ ...parsed, backupSequenceName });
+      } catch { /* keep raw */ }
+    }
+    return await this.withVerification(withBackup, sequenceId);
   }
 
   // Effects and Transitions Implementation
@@ -2278,13 +2521,38 @@ export class PremiereProTools {
         if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found by id: ${sequenceId}" });
         var projectItem = __findProjectItem(${JSON.stringify(projectItemId)});
         if (!projectItem) return JSON.stringify({ success: false, error: "Caption project item not found" });
-        var startAtTime = ${startTimeVal};
-        sequence.createCaptionTrack(projectItem, startAtTime, ${JSON.stringify(formatVal)});
+
+        // createCaptionTrack wants ticks (string) for the start time and an integer
+        // caption-format constant. Passing seconds-as-number and a format *name*
+        // is what produced "Illegal Parameter type" on every call.
+        //   0 = Subtitle, 1 = CEA-608, 2 = CEA-708, 3 = Teletext, 4 = EBU, 5 = OP-47
+        var FORMATS = { "subtitle": 0, "subtitle default": 0, "cea-608": 1, "cea608": 1,
+                        "cea-708": 2, "cea708": 2, "teletext": 3, "ebu": 4, "op-47": 5, "op47": 5 };
+        var wanted = ${JSON.stringify(String(formatVal).toLowerCase())};
+        var formatCode = FORMATS.hasOwnProperty(wanted) ? FORMATS[wanted] : 0;
+        var startTicks = __secondsToTicks(${startTimeVal});
+
+        var attempts = [];
+        var made = false, lastErr = null;
+        // Signature varies across builds; try ticks-string first, then a Time
+        // object, then the 2-arg form.
+        var tries = [
+          function () { sequence.createCaptionTrack(projectItem, startTicks, formatCode); },
+          function () { var t = new Time(); t.seconds = ${startTimeVal}; sequence.createCaptionTrack(projectItem, t, formatCode); },
+          function () { sequence.createCaptionTrack(projectItem, startTicks); }
+        ];
+        for (var i = 0; i < tries.length && !made; i++) {
+          try { tries[i](); made = true; attempts.push("form" + (i + 1) + ":ok"); }
+          catch (e) { lastErr = e.toString(); attempts.push("form" + (i + 1) + ":" + lastErr); }
+        }
+        if (!made) return JSON.stringify({ success: false, error: lastErr || "createCaptionTrack failed", attempts: attempts });
+
         return JSON.stringify({
           success: true,
           message: "Caption track created",
-          captionFormat: ${JSON.stringify(formatVal)},
-          startTime: ${startTimeVal}
+          captionFormat: formatCode,
+          startTime: ${startTimeVal},
+          attempts: attempts
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
