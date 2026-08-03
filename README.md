@@ -139,8 +139,35 @@ The cut logic is fuzzed against **1000+ generated transcripts per run** (`npm ru
 
 ---
 
+## Docs
+
+[Install](docs/INSTALL.md) · [Skills](skills/README.md) · [Known issues](docs/KNOWN_ISSUES.md) · [Contributing](docs/CONTRIBUTING.md)
+
+---
+
+## Credits
+
+Built on **[hetpatel-11/Adobe_Premiere_Pro_MCP](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP)**.
+That project wrote the CEP bridge and the MCP server that actually talk to Premiere —
+the hard part, and the part this still runs on. None of this exists without it.
+
+What this fork is: **one editor's workflow, built on top of that.** A YouTube channel's
+own cut-and-caption process, encoded as skills and prompts, with the server shaped
+around it. Everything here came from editing real footage and hitting real problems:
+
+- speech-based cut detection — word-gap silences and repeated takes, not amplitude
+- freeze checking, so a live on-screen demo is never mistaken for dead air
+- categorized proposals that hold back the intro hook, the outro and long demos
+- mutations that re-query the timeline instead of trusting their own success report
+- a source→timeline map, so an edit can be re-captioned without transcribing it again
+- two agent skills carrying the thresholds and failure modes that cost real re-edits
+
+The general-purpose surface (media management, effects, transitions, titles, render
+queue) was pruned to keep the cut path trustworthy. **If you want full Premiere
+control, use the upstream project** — it does more, and it is the foundation here.
+Take this one if a reviewed cut and frame-accurate captions are what you are after,
+and treat the Korean skills as a worked example to adapt rather than a general answer.
+
 ## License
 
-Docs: [Install](docs/INSTALL.md) · [Skills](skills/README.md) · [Known issues](docs/KNOWN_ISSUES.md) · [Contributing](docs/CONTRIBUTING.md)
-
-See [LICENSE.md](LICENSE.md). Built on the Adobe Premiere Pro MCP foundation; refocused as a cut + caption specialist.
+MIT, © 2025-2026 hetpatel-11. See [LICENSE.md](LICENSE.md).
