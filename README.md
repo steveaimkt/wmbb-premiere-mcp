@@ -1,6 +1,6 @@
 # WMBB Premiere Cut MCP
 
-**Cut your Premiere Pro timeline by talking to Claude — silences and repeated takes gone in one review, hooks and live demos never touched.**
+**Cut your Premiere Pro timeline by talking to Claude, then caption the result without transcribing it again.**
 
 Point it at a sequence. It transcribes the speech, finds the dead air and the flubbed retakes, *looks at the screen* to tell a live demo from a frozen one, and shows you a categorized plan. You approve. It cuts — backed up, A/V in sync, and verified by re-reading the timeline, not by trusting itself.
 
@@ -21,7 +21,7 @@ Every silence cutter dies the same way: it makes a cut you don't trust. `auto-ed
 - 🔁 **Reversible and verified.** Every cut backs up the sequence first, ripple-deletes A/V linked so they never desync, then re-queries the timeline and reports measured length vs expected. `success: true` is never mistaken for "it worked."
 - ✂️ **Inside Premiere.** No export/import round-trip, no re-encode — it edits your real timeline.
 
-It does **one thing**: cut editing. 25 focused tools, no color/transitions/titles bloat.
+It does **two things** — cut, and caption the cut. 26 focused tools, no color/transitions/titles bloat.
 
 ---
 
@@ -65,19 +65,34 @@ Open Premiere (Beta), open the MCP bridge panel, set its temp directory, and cli
 
 ---
 
-## Use it
+## Two things, two prompts
 
-Just ask, or invoke the built-in prompt **`cut_edit_workflow`**:
+The server does exactly two jobs, and ships one prompt for each.
+
+### 1. `cut_edit_workflow` — cut the timeline
 
 > "Cut the silences and repeated takes from my active sequence."
-
-The flow, every time:
 
 1. **`analyze_sequence_cuts`** — transcribe + categorize + freeze-check the screen. Read-only.
 2. **You review** the plan: what gets cut per category, and for each long gap, static (dead air) or active (demo).
 3. **`apply_sequence_cuts`** — backup → ripple-delete → **verify by re-query**.
 
-Two calls, two gates (approve before, verify after). That's the whole thing.
+Two calls, two gates (approve before, verify after).
+
+### 2. `caption_review_workflow` — caption the edit
+
+> "Make subtitles for the sequence as it is now."
+
+**It does not transcribe the cut.** `list_sequence_tracks` returns each clip's source
+in/out beside its timeline position — that pairing *is* the source→timeline map. The
+word timestamps you already have get re-projected through it, so the captions are
+frame-accurate after any number of re-edits and cost nothing extra.
+
+It works on a timeline you cut by hand in Premiere. No cut-edit session required in front of it.
+
+Re-transcribing an edit is the obvious approach and it is worse in every measurable way:
+slower, and it destroys the corrections you accumulated (a fixed term reverting to
+nonsense, sentences truncated mid-clause). So the server refuses to do it that way.
 
 ---
 
@@ -95,15 +110,42 @@ Two calls, two gates (approve before, verify after). That's the whole thing.
 
 ---
 
-## The tools (25, cut-edit only)
+## The tools (26)
 
-**Plan:** `analyze_sequence_cuts` · `analyze_speech_edit_points` · `proofread_transcript` · `export_captions` · `read_sequence_captions` · `find_speech_spans`
-**Cut:** `apply_sequence_cuts` · `apply_timeline_removals` · `razor_timeline_at_time` · `remove_from_timeline` · `trim_clip`
+**Cut · plan:** `analyze_sequence_cuts` · `analyze_speech_edit_points` · `find_speech_spans`
+**Cut · apply:** `apply_sequence_cuts` · `apply_timeline_removals` · `razor_timeline_at_time` · `remove_from_timeline` · `trim_clip`
+**Caption:** `export_captions` · `proofread_transcript` · `read_sequence_captions`
+**Place:** `insert_clip`
 **Safety:** `backup_sequence` · `restore_sequence_backup` · `duplicate_sequence` · `undo` · `save_project`
 **Look:** `export_frame` · `export_sequence`
 **Discovery:** `get_project_info` · `list_sequences` · `get_active_sequence` · `set_active_sequence` · `list_sequence_tracks` · `list_project_items` · `get_clip_properties`
 
 ---
+
+## Measured, not reported
+
+A cut tool that says it worked is not evidence it worked. This one came back
+`fullyApplied: true`, `inSync: true`, `shortfallSec: 0` while leaving a 27-second
+hole in the timeline. So the change tools now check themselves:
+
+```jsonc
+// apply_timeline_removals / insert_clip
+{
+  "fullyApplied": true,
+  "verify": {                    // ← re-queried from the timeline, judge from this
+    "measuredEndSec": 1279.667,
+    "gapCount": 0,
+    "contiguous": true,
+    "avParity": true
+  },
+  "verified": true,
+  "verifyProblems": null
+}
+```
+
+If a gap or an A/V mismatch is measured, `success` drops to `false` and
+`verifyProblems` says what is wrong. `list_sequences`.duration reports a stale value
+mid-edit — use `list_sequence_tracks` → `verify.measuredEndSec` instead.
 
 ## Trust, engineered
 
@@ -113,4 +155,4 @@ The cut logic is fuzzed against **1000+ generated transcripts per run** (`npm ru
 
 ## License
 
-See [LICENSE.md](LICENSE.md). Built on the Adobe Premiere Pro MCP foundation; refocused as a cut-editing specialist.
+See [LICENSE.md](LICENSE.md). Built on the Adobe Premiere Pro MCP foundation; refocused as a cut + caption specialist.
