@@ -1,6 +1,7 @@
 /**
- * Unit tests for PremiereProPrompts — the cut-edit specialist ships one prompt,
- * cut_edit_workflow, which encodes the reviewed+verified workflow.
+ * Unit tests for PremiereProPrompts — the server ships one prompt per capability:
+ * cut_edit_workflow (reviewed + verified cutting) and caption_review_workflow
+ * (caption an edit by re-projecting an existing transcript).
  */
 
 import { PremiereProPrompts } from '../../prompts/index.js';
@@ -17,6 +18,11 @@ describe('PremiereProPrompts', () => {
       const available = prompts.getAvailablePrompts();
       expect(Array.isArray(available)).toBe(true);
       expect(available.map((p) => p.name)).toContain('cut_edit_workflow');
+    });
+
+    it('ships exactly the two capability prompts', () => {
+      const names = prompts.getAvailablePrompts().map((p) => p.name).sort();
+      expect(names).toEqual(['caption_review_workflow', 'cut_edit_workflow']);
     });
 
     it('every prompt has a name, description, and well-formed arguments', () => {
@@ -65,6 +71,57 @@ describe('PremiereProPrompts', () => {
 
     it('throws for an unknown prompt', async () => {
       await expect(prompts.getPrompt('does_not_exist', {})).rejects.toThrow();
+    });
+  });
+
+  describe('caption_review_workflow', () => {
+    const textOf = async (args: Record<string, any> = {}) =>
+      (await prompts.getPrompt('caption_review_workflow', args)).messages[0].content.text;
+
+    it('forbids re-transcribing the cut and names the map source', async () => {
+      const text = await textOf();
+      expect(text).toMatch(/Do not transcribe the edited timeline/i);
+      expect(text).toContain('includeSourceTimes');
+      expect(text).toContain('inPoint');
+    });
+
+    it('makes the map assertion a hard stop', async () => {
+      const text = await textOf();
+      expect(text).toMatch(/assert/i);
+      expect(text).toMatch(/stop and report/i);
+    });
+
+    it('routes length judgement away from list_sequences.duration', async () => {
+      const text = await textOf();
+      expect(text).toContain('verify.measuredEndSec');
+      expect(text).toMatch(/never by .?list_sequences/i);
+    });
+
+    it('covers the two projection failure modes', async () => {
+      const text = await textOf();
+      expect(text).toMatch(/Boundary ghosts/i);
+      expect(text).toMatch(/Duplicate emission/i);
+    });
+
+    it('requires the glossary pass to run twice', async () => {
+      const text = await textOf();
+      expect(text).toMatch(/Apply it \*\*twice\*\*/i);
+      expect(text).toMatch(/Do not guess/i);
+    });
+
+    it('threads sequence_id, language and cue shape into the guidance', async () => {
+      const text = await textOf({ sequence_id: 'seq-42', language: 'en', max_chars: 32, lines: '2' });
+      expect(text).toContain('seq-42');
+      expect(text).toContain('"en"');
+      expect(text).toContain('32 characters');
+      expect(text).toContain('2 lines');
+    });
+
+    it('defaults to single-line 20-character Korean cues', async () => {
+      const text = await textOf();
+      expect(text).toContain('1 line,');
+      expect(text).toContain('20 characters');
+      expect(text).toContain('"ko"');
     });
   });
 });
