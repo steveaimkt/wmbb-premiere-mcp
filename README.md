@@ -31,8 +31,8 @@ Requires **Adobe Premiere Pro (Beta)**, **Node 18+**, **Python + faster-whisper*
 (`pip install faster-whisper`) and **ffmpeg** on PATH.
 
 ```bash
-git clone https://github.com/steveaimkt/Adobe_Premiere_Pro_MCP
-cd Adobe_Premiere_Pro_MCP
+git clone https://github.com/steveaimkt/wmbb-premiere-mcp
+cd wmbb-premiere-mcp
 npm run setup:mac
 ```
 

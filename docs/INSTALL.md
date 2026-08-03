@@ -45,8 +45,8 @@ drive it from an AI client — a project open in the release build is invisible 
 ## macOS — scripted
 
 ```bash
-git clone https://github.com/steveaimkt/Adobe_Premiere_Pro_MCP
-cd Adobe_Premiere_Pro_MCP
+git clone https://github.com/steveaimkt/wmbb-premiere-mcp
+cd wmbb-premiere-mcp
 npm run setup:mac
 ```
 
@@ -120,7 +120,7 @@ Claude Desktop — `~/Library/Application Support/Claude/claude_desktop_config.j
   "mcpServers": {
     "premiere-pro": {
       "command": "node",
-      "args": ["/absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js"],
+      "args": ["/absolute/path/to/wmbb-premiere-mcp/dist/index.js"],
       "env": { "PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge" }
     }
   }
@@ -130,12 +130,12 @@ Claude Desktop — `~/Library/Application Support/Claude/claude_desktop_config.j
 Claude Code:
 ```bash
 claude mcp add premiere-pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge \
-  -- node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
+  -- node /absolute/path/to/wmbb-premiere-mcp/dist/index.js
 ```
 
 Codex — must be one line:
 ```bash
-codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js
+codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /absolute/path/to/wmbb-premiere-mcp/dist/index.js
 ```
 
 Restart the client after any config change.
@@ -151,7 +151,7 @@ The server alone can run straight from GitHub:
   "mcpServers": {
     "premiere-cut": {
       "command": "npx",
-      "args": ["-y", "github:steveaimkt/Adobe_Premiere_Pro_MCP"]
+      "args": ["-y", "github:steveaimkt/wmbb-premiere-mcp"]
     }
   }
 }
