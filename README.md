@@ -27,41 +27,25 @@ It does **two things** — cut, and caption the cut. 26 focused tools, no color/
 
 ## Install
 
-Requires: **Adobe Premiere Pro (Beta)** with the MCP bridge panel, **Node 18+**, and **Python + faster-whisper** (`pip install faster-whisper`) and **ffmpeg** on PATH.
-
-**Option A — run straight from GitHub (no clone):**
-
-```json
-{
-  "mcpServers": {
-    "premiere-cut": {
-      "command": "npx",
-      "args": ["-y", "github:steveaimkt/Adobe_Premiere_Pro_MCP"]
-    }
-  }
-}
-```
-
-**Option B — clone and run locally:**
+Requires **Adobe Premiere Pro (Beta)**, **Node 18+**, **Python + faster-whisper**
+(`pip install faster-whisper`) and **ffmpeg** on PATH.
 
 ```bash
 git clone https://github.com/steveaimkt/Adobe_Premiere_Pro_MCP
 cd Adobe_Premiere_Pro_MCP
-npm install && npm run build
+npm run setup:mac
 ```
 
-```json
-{
-  "mcpServers": {
-    "premiere-cut": {
-      "command": "node",
-      "args": ["/absolute/path/to/Adobe_Premiere_Pro_MCP/dist/index.js"]
-    }
-  }
-}
-```
+Then in Premiere (Beta): `Window > Extensions > MCP Bridge (CEP)` → set Temp Directory to
+`/tmp/premiere-mcp-bridge` → **Save Configuration** → **Start Bridge** → **Test Connection**.
 
-Open Premiere (Beta), open the MCP bridge panel, set its temp directory, and click **Start Bridge**.
+> **The bridge panel is not optional.** The server talks to Premiere through a CEP panel
+> running inside the app; if it is not open and started, every tool call fails even though
+> your client shows the server as connected. And use the **Beta** build — the panel loads in
+> release, but calls do not come back there.
+
+Manual install, Windows, npx-without-cloning, and troubleshooting:
+**[docs/INSTALL.md](docs/INSTALL.md)**
 
 ---
 
@@ -154,5 +138,7 @@ The cut logic is fuzzed against **1000+ generated transcripts per run** (`npm ru
 ---
 
 ## License
+
+Docs: [Install](docs/INSTALL.md) · [Known issues](docs/KNOWN_ISSUES.md) · [Contributing](docs/CONTRIBUTING.md)
 
 See [LICENSE.md](LICENSE.md). Built on the Adobe Premiere Pro MCP foundation; refocused as a cut + caption specialist.

@@ -62,14 +62,20 @@ else
   fail "Bridge temp directory missing at $TEMP_DIR"
 fi
 
-for csxs_version in 12 11 10; do
+for csxs_version in 14 13 12 11 10; do
   VALUE="$(defaults read "com.adobe.CSXS.$csxs_version" PlayerDebugMode 2>/dev/null || true)"
   if [[ "$VALUE" == "1" ]]; then
     pass "Adobe CEP debug mode enabled for CSXS.$csxs_version"
   else
-    fail "Adobe CEP debug mode not enabled for CSXS.$csxs_version"
+    fail "Adobe CEP debug mode not enabled for CSXS.$csxs_version (run npm run setup:mac)"
   fi
 done
+
+if [[ -d "/Applications/Adobe Premiere Pro (Beta)" ]]; then
+  pass "Premiere Pro (Beta) is installed"
+else
+  fail "Premiere Pro (Beta) not found in /Applications - the bridge is only known to work on Beta (see docs/INSTALL.md)"
+fi
 
 if [[ -f "$CLAUDE_CONFIG_PATH" ]]; then
   CONFIG_CHECK="$(

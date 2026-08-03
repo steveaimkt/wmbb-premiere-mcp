@@ -38,9 +38,11 @@ if [[ ! -f "$DIST_ENTRY" ]]; then
 fi
 
 echo "Enabling Adobe CEP debug mode..."
-defaults write com.adobe.CSXS.12 PlayerDebugMode 1
-defaults write com.adobe.CSXS.11 PlayerDebugMode 1
-defaults write com.adobe.CSXS.10 PlayerDebugMode 1
+# Which CSXS version Premiere uses depends on the build, and an unset one silently
+# refuses to load an unsigned panel — so set every version this could land on.
+for csxs_version in 10 11 12 13 14; do
+  defaults write "com.adobe.CSXS.$csxs_version" PlayerDebugMode 1
+done
 
 echo "Installing Premiere CEP extension..."
 mkdir -p "$CEP_EXTENSIONS_DIR"
