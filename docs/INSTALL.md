@@ -228,5 +228,21 @@ extensions may rely on it.
 
 ---
 
+## Skills (optional)
+
+The two workflows also ship as agent skills, so a Claude client can enter them by name:
+
+```bash
+npm run skills:install          # symlinks into ~/.claude/skills/
+npm run skills:install -- --copy   # copy instead, if your client won't follow symlinks
+```
+
+Then `"컷편집 시작하자"` or `"자막 검수 시작하자"`. See [../skills/README.md](../skills/README.md).
+
+The skills are optional — the MCP prompts (`cut_edit_workflow`, `caption_review_workflow`)
+carry the same workflows for clients without skill support.
+
+---
+
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for confirmed runtime limits, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to work on the server.

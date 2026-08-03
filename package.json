@@ -1,7 +1,7 @@
 {
-  "name": "wmbb-premiere-pro-mcp",
+  "name": "wmbb-premiere-mcp",
   "version": "1.0.0",
-  "description": "Cut-editing specialist MCP for Adobe Premiere Pro — remove silences and repeated takes by talking to Claude, with demos and hooks protected and every cut verified.",
+  "description": "WMBB Premiere MCP — cut your Adobe Premiere Pro timeline by talking to an AI client, then caption the result without transcribing it again.",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -15,7 +15,8 @@
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src/**/*.ts",
     "simulate": "node scripts/simulate-cuts.mjs 1000",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "skills:install": "bash ./scripts/install-skills.sh"
   },
   "keywords": [
     "mcp",
@@ -61,11 +62,13 @@
     "node": ">=18.0.0"
   },
   "bin": {
-    "wmbb-premiere-cut-mcp": "dist/index.js"
+    "wmbb-premiere-mcp": "dist/index.js"
   },
   "files": [
     "dist",
     "README.md",
-    "LICENSE.md"
+    "LICENSE.md",
+    "skills",
+    "docs"
   ]
 }

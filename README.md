@@ -1,4 +1,4 @@
-# WMBB Premiere Cut MCP
+# WMBB Premiere MCP
 
 **Cut your Premiere Pro timeline by talking to Claude, then caption the result without transcribing it again.**
 
@@ -46,6 +46,8 @@ Then in Premiere (Beta): `Window > Extensions > MCP Bridge (CEP)` → set Temp D
 
 Manual install, Windows, npx-without-cloning, and troubleshooting:
 **[docs/INSTALL.md](docs/INSTALL.md)**
+
+Both workflows also ship as agent skills — `npm run skills:install`. See **[skills/](skills/README.md)**.
 
 ---
 
@@ -139,6 +141,6 @@ The cut logic is fuzzed against **1000+ generated transcripts per run** (`npm ru
 
 ## License
 
-Docs: [Install](docs/INSTALL.md) · [Known issues](docs/KNOWN_ISSUES.md) · [Contributing](docs/CONTRIBUTING.md)
+Docs: [Install](docs/INSTALL.md) · [Skills](skills/README.md) · [Known issues](docs/KNOWN_ISSUES.md) · [Contributing](docs/CONTRIBUTING.md)
 
 See [LICENSE.md](LICENSE.md). Built on the Adobe Premiere Pro MCP foundation; refocused as a cut + caption specialist.
