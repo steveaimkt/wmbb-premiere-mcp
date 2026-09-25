@@ -43,12 +43,13 @@
 
 ## 여기서 시작
 
+처음 설치하려면 → [클로드 코드에 한 줄 붙여넣기](#가장-쉬운-방법--클로드-코드에게-맡기기)
 컷편집하려면 → **「컷편집 시작하자」**
 자막을 만들려면 → **「자막 검수 시작하자」**
 연결이 되는지 보려면 → 「지금 프리미어 프로젝트 정보 알려줘」
 
 툴 이름은 외울 필요가 없다. 하고 싶은 일을 평소 말로 입력하면 AI 클라이언트가 알맞은 툴을 골라 실행한다.
-위의 두 문장은 [스킬](skills/README.md)을 설치했을 때 쓰는 말이다. 스킬 없이도 MCP 프롬프트(`cut_edit_workflow`, `caption_review_workflow`)로 같은 절차를 실행할 수 있다.
+「컷편집 시작하자」「자막 검수 시작하자」는 클로드 코드에 [스킬](skills/README.md)을 설치했을 때 쓰는 말이다. 클로드 데스크톱이나 Codex에서는 MCP 프롬프트(`cut_edit_workflow`, `caption_review_workflow`)로 같은 절차를 실행한다.
 
 ## 무엇이 다른가
 
@@ -97,7 +98,7 @@ MCP 서버 (node)    요청을 임시 폴더에 파일로 쓴다
 | 구성 | 내용 |
 |---|---|
 | **MCP 프롬프트 2개** | `cut_edit_workflow`(컷편집), `caption_review_workflow`(자막). 스킬이 없는 클라이언트도 같은 절차로 실행한다 |
-| **스킬 2개** | `프리미어-컷편집`, `자막-검수`. 실제 촬영본에서 잰 기준값과, 재편집 비용을 치르며 알게 된 실패 사례를 담았다 |
+| **스킬 3개** | `프리미어-컷편집`, `자막-검수`: 실제 촬영본에서 잰 기준값과, 재편집 비용을 치르며 알게 된 실패 사례를 담았다. `프리미어-MCP-설치`: 설치를 한 단계씩 진행하고 점검한다 |
 | **툴 26개** | 컷 계획·적용, 자막, 클립 배치, 안전장치, 화면 확인, 조회 |
 | **브릿지 패널** | 프리미어 `Window > Extensions > MCP Bridge (CEP)` |
 
@@ -117,16 +118,39 @@ MCP 서버 (node)    요청을 임시 폴더에 파일로 쓴다
 
 ## 설치
 
-**Adobe Premiere Pro (Beta)**, **Node 18 이상**, **Python과 faster-whisper**(`pip install faster-whisper`), **ffmpeg**가 필요하다. 프리미어, AI 클라이언트, 이 서버는 **같은 컴퓨터**에 있어야 한다.
-Beta는 Creative Cloud의 「앱 → 베타 앱」에서 설치한다. 정식 빌드와 따로 설치되므로 기존 프로젝트에는 영향이 없다.
+### 가장 쉬운 방법 — 클로드 코드에게 맡기기
 
-설치는 세 단계다. ① 서버를 받아 빌드하고 → ② 프리미어에 브릿지 패널을 설치하고 → ③ AI 클라이언트에 서버를 등록한다. macOS에서는 아래 명령 하나로 세 단계가 모두 끝난다(클라이언트 등록은 클로드 데스크톱만 자동이다).
+클로드 코드를 열고 아래 한 줄을 그대로 붙여 넣는다.
 
-### 1. macOS 자동 설치 (추천)
+```
+https://github.com/steveaimkt/wmbb-premiere-mcp 를 ~/dev/wmbb-premiere-mcp 에 클론하고, 그 안의 skills/프리미어-MCP-설치/SKILL.md 를 읽고 그 순서대로 설치를 진행해줘
+```
+
+클로드가 준비물 점검부터 스킬 설치까지 한 단계씩 진행한다. 단계마다 결과를 보여 주고, 「다음」이라고 하면 넘어간다. 무언가를 새로 설치하기 전에는 먼저 묻는다. 프리미어 안에서 버튼을 누르는 단계만 사용자가 직접 한다.
+
+한 번 설치한 뒤에는 「**프리미어 MCP 설치 점검**」 또는 「**프리미어 연결이 안 돼**」라고 하면 같은 스킬이 설치 상태를 다시 확인한다. 저장소 폴더에서 클로드 코드를 열었다면 「**프리미어 MCP 설치하자**」로도 부를 수 있다.
+
+아래는 같은 과정을 직접 할 때의 순서다.
+
+### 준비물
+
+프리미어, AI 클라이언트, 이 서버는 **같은 컴퓨터**에 있어야 한다. 자동 설치는 macOS 전용이다(Windows는 [수동 설치](docs/INSTALL.md#macos--manual)).
+
+| 준비물 | 확인 | 없으면 |
+|---|---|---|
+| **Adobe Premiere Pro (Beta)** | `/Applications` 에 `Adobe Premiere Pro (Beta)` 가 있다 | Creative Cloud 앱 → **앱 → 베타 앱** 에서 설치. 정식 빌드와 따로 설치되고 기존 프로젝트에 영향이 없다 |
+| **Homebrew** | `brew -v` | [brew.sh](https://brew.sh) 의 설치 명령 |
+| **Node 18 이상** | `node -v` | `brew install node` |
+| **ffmpeg** | `ffmpeg -version` | `brew install ffmpeg` |
+| **faster-whisper** | `python3 -c "import faster_whisper"` | `python3 -m pip install --user faster-whisper` |
+
+> faster-whisper 설치에서 `externally-managed-environment` 오류가 나면(Homebrew Python에서 흔하다), ① 을 마친 뒤 저장소 폴더에서 `python3 -m venv .venv && .venv/bin/pip install faster-whisper` 로 설치하고, ③ 에서 등록할 때 `PYTHON_PATH` 를 그 Python으로 지정한다.
+
+### ① 서버 설치
 
 ```bash
-git clone https://github.com/steveaimkt/wmbb-premiere-mcp
-cd wmbb-premiere-mcp
+git clone https://github.com/steveaimkt/wmbb-premiere-mcp ~/dev/wmbb-premiere-mcp
+cd ~/dev/wmbb-premiere-mcp
 npm run setup:mac
 ```
 
@@ -138,94 +162,101 @@ npm run setup:mac
 4. 브릿지 임시 폴더 `/tmp/premiere-mcp-bridge` 를 만든다
 5. 클로드 데스크톱 설정에 `premiere-pro` 서버를 추가한다
 
-### 2. 프리미어에서 브릿지 켜기
+> iCloud로 동기화되는 폴더(데스크톱, 문서 등)에는 설치하지 않는다. `node_modules` 의 파일 수만 개가 동기화되면서 느려지고 파일이 빠지는 경우가 있다.
 
-1. 설치하는 동안 프리미어가 열려 있었다면 다시 시작한다
-2. **프리미어(Beta)** 에서 `Window > Extensions > MCP Bridge (CEP)` 를 연다
-3. **Temp Directory** 를 `/tmp/premiere-mcp-bridge` 로 지정한다
-4. **Save Configuration** → **Start Bridge** → **Test Connection**
+### ② 프리미어에서 브릿지 켜기
+
+1. 프리미어가 열려 있으면 완전히 종료하고 **Premiere Pro (Beta)** 를 연다
+2. 아무 프로젝트나 연다
+3. `Window > Extensions > MCP Bridge (CEP)` 를 연다
+4. **Temp Directory** 를 `/tmp/premiere-mcp-bridge` 로 지정한다
+5. **Save Configuration** → **Start Bridge** → **Test Connection**
 
 Test Connection이 통과해야 다음으로 넘어간다. 메뉴에 패널이 보이지 않으면 프리미어 환경설정에서 **UXP Plugins > Enable developer mode** 를 켜고 프리미어를 다시 시작한다.
 
-### 3. AI 클라이언트에 등록하기
+**프리미어를 켤 때마다 Start Bridge를 다시 눌러야 한다.** "연결됐다고 뜨는데 안 된다"의 가장 흔한 원인이다.
 
-**클로드 데스크톱** — `setup:mac` 이 이미 등록했다. 앱을 다시 시작하면 된다.
+### ③ AI 클라이언트에 등록
 
-**클로드 코드**
+아래 명령의 `~/dev/wmbb-premiere-mcp` 는 ① 에서 클론한 위치다. 다른 곳에 설치했다면 그 폴더에서 `pwd` 를 실행해 나온 경로로 바꾼다.
+
+**클로드 데스크톱** — ① 에서 이미 등록됐다. 앱을 다시 시작하면 된다.
+
+**클로드 코드** — 모든 폴더에서 쓰도록 user 범위로 등록한다.
 
 ```bash
-claude mcp add premiere-pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge \
-  -- node /절대경로/wmbb-premiere-mcp/dist/index.js
+claude mcp add premiere-pro --scope user \
+  --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge \
+  -- node ~/dev/wmbb-premiere-mcp/dist/index.js
 ```
 
 **Codex** — 반드시 한 줄로 입력한다.
 
 ```bash
-codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /절대경로/wmbb-premiere-mcp/dist/index.js
+codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node ~/dev/wmbb-premiere-mcp/dist/index.js
 ```
 
-**그 밖의 MCP 클라이언트** — 설정 파일에 이렇게 넣는다.
+**그 밖의 MCP 클라이언트** — 설정 파일에 이렇게 넣는다. JSON에는 `~` 가 통하지 않으므로 `pwd` 로 확인한 전체 경로를 쓴다.
 
 ```json
 {
   "mcpServers": {
     "premiere-pro": {
       "command": "node",
-      "args": ["/절대경로/wmbb-premiere-mcp/dist/index.js"],
+      "args": ["/Users/<사용자이름>/dev/wmbb-premiere-mcp/dist/index.js"],
       "env": { "PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge" }
     }
   }
 }
 ```
 
-등록한 뒤 클라이언트를 다시 시작하고, 프리미어(Beta)에서 프로젝트를 연 채로 「지금 프리미어 프로젝트 정보 알려줘」라고 입력한다. 프로젝트 이름과 시퀀스가 나오면 설치가 끝난 것이다.
+faster-whisper를 가상환경에 설치했다면 `env` 에 `"PYTHON_PATH": "<저장소>/.venv/bin/python"` 을, 명령에는 `--env PYTHON_PATH=<저장소>/.venv/bin/python` 을 더한다.
 
-### 클론 없이 실행하기
-
-서버만 GitHub에서 바로 실행할 수도 있다.
-
-```json
-{
-  "mcpServers": {
-    "premiere-pro": {
-      "command": "npx",
-      "args": ["-y", "github:steveaimkt/wmbb-premiere-mcp"],
-      "env": { "PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge" }
-    }
-  }
-}
-```
-
-이 방법은 서버만 설치한다. **브릿지 패널은 따로 설치해야 한다** ([수동 설치 2~4단계](docs/INSTALL.md#macos--manual)).
-
-### 스킬 (선택)
+### ④ 컷편집·자막 스킬 설치
 
 ```bash
+cd ~/dev/wmbb-premiere-mcp
 npm run skills:install
 ```
 
-`~/.claude/skills/` 에 링크로 설치된다. 저장소를 `git pull` 하면 스킬도 함께 바뀐다. 설치한 뒤 클라이언트를 다시 시작하면 「컷편집 시작하자」「자막 검수 시작하자」로 부를 수 있다.
+`프리미어-컷편집`, `자막-검수`, `프리미어-MCP-설치` 스킬이 `~/.claude/skills/` 에 링크로 설치된다. 저장소를 `git pull` 하면 스킬도 함께 바뀐다.
 
-### 원본 프로젝트의 설치 방법과 무엇이 다른가
+| 클라이언트 | 컷편집·자막을 부르는 방법 |
+|---|---|
+| **클로드 코드** | 「컷편집 시작하자」, 「자막 검수 시작하자」 |
+| **클로드 데스크톱, Codex 등** | 스킬 대신 MCP 프롬프트를 쓴다. 프롬프트 목록에서 `cut_edit_workflow`(컷편집) 또는 `caption_review_workflow`(자막)를 고른다. 절차는 같다 |
 
-[원본 프로젝트](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP#install)는 npm 패키지(`npm install -g adobe-premiere-pro-mcp`), 클로드 코드·Codex 플러그인, 클로드 데스크톱 원클릭 번들(`.mcpb`)로도 설치할 수 있다. **이 방법들은 원본 서버(툴 283개)를 설치한다.** 이 포크의 컷편집·자막 기능은 들어 있지 않다. 이 포크는 위의 저장소 클론 방식으로 설치한다.
-
-### 설치 확인과 문제 해결
+### 확인
 
 ```bash
 npm run setup:doctor
 ```
 
-빌드, 브릿지 패널, 디버그 모드, 클라이언트 설정 중 무엇이 빠졌는지 알려 준다. 클라이언트에는 서버가 연결됐다고 뜨는데 툴 호출이 실패하면 아래 순서로 확인한다.
+빌드, 브릿지 패널, CEP 디버그 모드, Beta 설치, 클로드 데스크톱 설정을 점검한다. 클로드 데스크톱을 쓰지 않으면 "Claude Desktop config" 항목의 `[missing]` 은 무시해도 된다.
 
-| 확인할 것 | 고치는 법 |
+그다음 AI 클라이언트를 **완전히 종료했다가 다시 열고**, 프리미어(Beta)에서 프로젝트를 연 채로 입력한다.
+
+```
+지금 프리미어 프로젝트 정보 알려줘
+```
+
+프로젝트 이름과 시퀀스 목록이 나오면 설치가 끝난 것이다.
+
+### 연결이 안 될 때
+
+| 증상 | 확인할 것 |
 |---|---|
-| 프리미어 **(Beta)** 에서 프로젝트를 열었나 | 둘 다 필요하다. 정식 빌드에서 연 프로젝트는 브릿지가 보지 못한다 |
-| 브릿지 패널을 열고 **Start Bridge** 했나 | `Window > Extensions > MCP Bridge (CEP)` → Start Bridge |
-| 패널의 Temp Directory와 클라이언트의 `PREMIERE_TEMP_DIR` 가 같나 | 둘 다 `/tmp/premiere-mcp-bridge` |
-| 패널을 연 뒤에 저장소를 업데이트했나 | 패널을 오른쪽 클릭 → **Reload** |
+| 서버가 연결됐다고 뜨는데 툴 호출이 전부 실패 | 프리미어 **Beta** 에서 프로젝트를 열었나 · 패널에서 **Start Bridge** 를 눌렀나 |
+| 시간 초과 | 패널의 Temp Directory와 등록한 `PREMIERE_TEMP_DIR` 가 둘 다 `/tmp/premiere-mcp-bridge` 인가 |
+| 저장소를 업데이트한 뒤부터 이상하다 | `npm run build` 후 패널 오른쪽 클릭 → **Reload** |
+| 전사 툴만 실패 | faster-whisper가 설치된 Python을 서버가 쓰고 있나 (`PYTHON_PATH`) |
+| 서버가 목록에 없다 | 클라이언트를 완전히 다시 시작했나 · 클로드 코드는 `claude mcp list` 에 `premiere-pro` 가 있나 |
 
-그래도 안 되면 패널의 **Run Diagnostics** 를 누르고 `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json` 을 확인한다. Windows 설치와 수동 설치는 [docs/INSTALL.md](docs/INSTALL.md) 에 있다. 지울 때는 `npm run uninstall:mac`.
+그래도 안 되면 패널의 **Run Diagnostics** 를 누르고 `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json` 을 확인한다. 클론 없이 npx로 서버만 실행하는 방법과 Windows 설치는 [docs/INSTALL.md](docs/INSTALL.md) 에 있다. 지울 때는 `npm run uninstall:mac`.
+
+### 원본 프로젝트의 설치 방법과 무엇이 다른가
+
+[원본 프로젝트](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP#install)는 npm 패키지(`npm install -g adobe-premiere-pro-mcp`), 클로드 코드·Codex 플러그인, 클로드 데스크톱 원클릭 번들(`.mcpb`)로도 설치할 수 있다. **이 방법들은 원본 서버(툴 283개)를 설치한다.** 이 포크의 컷편집·자막 기능은 들어 있지 않다. 이 포크는 위의 저장소 클론 방식으로 설치한다.
 
 ## 툴 26개
 
@@ -287,7 +318,7 @@ npm run setup:doctor
 ## 더 보기
 
 - **[docs/INSTALL.md](docs/INSTALL.md)** 수동 설치, Windows, npx 실행, 문제 해결
-- **[skills/README.md](skills/README.md)** 스킬 2개의 설치와 편집 규칙
+- **[skills/README.md](skills/README.md)** 스킬 3개의 설치와 편집 규칙
 - **[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)** 확인된 한계와 고친 결함
 - **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** 서버를 고치고 검사를 돌리는 방법
 

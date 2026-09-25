@@ -1,6 +1,6 @@
 # Skills
 
-Two agent skills, one per capability. They are the operator's side of the server:
+Two agent skills, one per capability, plus an installer skill. They are the operator's side of the server:
 the MCP prompts tell a client *what* the workflow is, these carry the accumulated
 judgement about *how it goes wrong* — thresholds measured on real footage, failure
 modes that cost a re-edit, and the checks that catch them.
@@ -9,6 +9,10 @@ modes that cost a re-edit, and the checks that catch them.
 |---|---|---|
 | `프리미어-컷편집` | "컷편집 시작하자" | `cut_edit_workflow` |
 | `자막-검수` | "자막 검수 시작하자" | `caption_review_workflow` |
+| `프리미어-MCP-설치` | "프리미어 MCP 설치하자" · "프리미어 MCP 설치 점검" | — (walks the install in [../README.md](../README.md#설치) one step at a time) |
+
+The installer skill is also linked at `.claude/skills/` so it loads when Claude Code is opened
+inside a fresh clone — before `skills:install` has run.
 
 They are independent. Captioning runs on a timeline cut by hand in Premiere with no
 cut session in front of it — and in practice it runs far more often, because every
