@@ -1,34 +1,34 @@
 # WMBB Premiere MCP
 
-**Cut your Premiere Pro timeline by talking to Claude, then caption the result without transcribing it again.**
+**Claude에게 말로 시켜서 프리미어 프로 타임라인을 컷편집하고, 편집본 자막은 다시 전사하지 않고 만든다.**
 
-Point it at a sequence. It transcribes the speech, finds the dead air and the flubbed retakes, *looks at the screen* to tell a live demo from a frozen one, and shows you a categorized plan. You approve. It cuts — backed up, A/V in sync, and verified by re-reading the timeline, not by trusting itself.
+시퀀스를 지정하면 음성을 전사하고, 말이 없는 구간과 말을 더듬고 다시 찍은 재테이크를 찾는다. 이어서 *화면을 직접 보고* 시연 중인 구간과 멈춰 있는 구간을 구분한 뒤, 카테고리별로 정리한 컷 계획을 보여준다. 사용자가 승인하면 자른다. 자르기 전에 백업하고, 오디오와 비디오를 함께 잘라 싱크를 유지하고, 끝나면 스스로의 성공 보고를 믿지 않고 타임라인을 다시 조회해 결과를 확인한다.
 
-> 2 hours of scrubbing for silences and bad takes → one reviewed pass.
+> 무음·NG 구간을 찾느라 2시간 동안 타임라인을 훑던 작업 → 검토 한 번으로 끝.
 
-<!-- ▶️ DEMO: record a 20-second screen capture — a spoken command, the proposal table, the cut landing — and drop it here. This is the single biggest thing you can do for stars. -->
-<p align="center"><em>(demo GIF goes here)</em></p>
-
----
-
-## Why this one
-
-Every silence cutter dies the same way: it makes a cut you don't trust. `auto-editor` over- and under-cuts on a real noise floor. `jumpcutter` was abandoned. Transcript tools mis-align. So the whole design here is built around **one promise — never a wrong cut**:
-
-- 🎯 **Categorized, never a flat list.** Duplicates and pauses are recommended; the intro hook, the outro, and long on-screen demos are held back for you to decide. A hook can't get swept into a bulk "remove silence."
-- 👁️ **It watches the screen.** Every long silent gap is run through freeze detection — a frozen screen is dead air (safe to cut), a changing screen is a live demo (kept). No more deleting the part where you're actually showing something.
-- 🗣️ **Cuts by what was said.** Whisper word-level transcript finds real silences (gaps between words, not amplitude — which is useless on room tone) and repeated takes, including the "flub → long reset → clean retake" and whole re-recorded paragraphs.
-- 🔁 **Reversible and verified.** Every cut backs up the sequence first, ripple-deletes A/V linked so they never desync, then re-queries the timeline and reports measured length vs expected. `success: true` is never mistaken for "it worked."
-- ✂️ **Inside Premiere.** No export/import round-trip, no re-encode — it edits your real timeline.
-
-It does **two things** — cut, and caption the cut. 26 focused tools, no color/transitions/titles bloat.
+<!-- ▶️ DEMO: 20초 화면 녹화 — 말로 명령 → 제안 표 → 컷 반영 — 를 여기에 넣는다. 스타를 받는 데 가장 효과가 큰 한 가지다. -->
+<p align="center"><em>(데모 GIF 자리)</em></p>
 
 ---
 
-## Install
+## 왜 이 도구인가
 
-Requires **Adobe Premiere Pro (Beta)**, **Node 18+**, **Python + faster-whisper**
-(`pip install faster-whisper`) and **ffmpeg** on PATH.
+무음 컷 도구는 모두 같은 이유로 버려진다. 믿을 수 없는 컷을 한 번 만들기 때문이다. `auto-editor`는 실제 소음이 깔린 소재에서 너무 많이 자르거나 덜 자른다. `jumpcutter`는 관리가 끊겼다. 전사 기반 도구는 싱크가 어긋난다. 그래서 이 도구는 **"틀린 컷은 절대 만들지 않는다"** 는 약속 하나를 기준으로 설계했다.
+
+- 🎯 **카테고리로 나눠 제안한다.** 반복 테이크와 공백은 삭제를 추천하고, 인트로 후킹·아웃트로·긴 화면 시연은 따로 빼서 사용자가 판단하게 한다. "무음 일괄 삭제"에 후킹 구간이 휩쓸려 사라지는 일이 없다.
+- 👁️ **화면을 확인한다.** 긴 무음 구간은 모두 정지 화면 검사를 거친다. 화면이 멈춰 있으면 버려도 되는 공백이고, 화면이 바뀌고 있으면 시연 중이므로 남긴다. 실제로 무언가를 보여주는 장면을 지워버리는 일이 없다.
+- 🗣️ **말한 내용을 기준으로 자른다.** Whisper 단어 단위 전사로 진짜 무음(음량이 아니라 단어와 단어 사이 간격 — 음량은 룸톤이 깔린 소재에서 쓸모가 없다)과 반복 테이크를 찾는다. "말 더듬 → 긴 정적 → 깨끗한 재테이크" 패턴과 문단 통째로 다시 녹음한 경우도 잡는다.
+- 🔁 **되돌릴 수 있고, 결과를 검증한다.** 자르기 전에 시퀀스를 백업하고, 오디오·비디오를 연결한 채 리플 삭제해 싱크가 절대 어긋나지 않게 한다. 그다음 타임라인을 다시 조회해 예상 길이와 실측 길이를 함께 보고한다. `success: true`를 "잘 됐다"로 착각하지 않는다.
+- ✂️ **프리미어 안에서 편집한다.** 내보내기·가져오기 왕복도, 재인코딩도 없다. 실제 작업 중인 타임라인을 직접 고친다.
+
+하는 일은 **두 가지**다. 컷편집, 그리고 편집본 자막. 툴 26개에 집중하고 색보정·트랜지션·타이틀 같은 기능은 넣지 않았다.
+
+---
+
+## 설치
+
+**Adobe Premiere Pro (Beta)**, **Node 18+**, **Python + faster-whisper**
+(`pip install faster-whisper`), PATH에 잡힌 **ffmpeg**가 필요하다.
 
 ```bash
 git clone https://github.com/steveaimkt/wmbb-premiere-mcp
@@ -36,89 +36,88 @@ cd wmbb-premiere-mcp
 npm run setup:mac
 ```
 
-Then in Premiere (Beta): `Window > Extensions > MCP Bridge (CEP)` → set Temp Directory to
-`/tmp/premiere-mcp-bridge` → **Save Configuration** → **Start Bridge** → **Test Connection**.
+그다음 프리미어(Beta)에서 `Window > Extensions > MCP Bridge (CEP)` → Temp Directory를
+`/tmp/premiere-mcp-bridge`로 지정 → **Save Configuration** → **Start Bridge** → **Test Connection**.
 
-> **The bridge panel is not optional.** The server talks to Premiere through a CEP panel
-> running inside the app; if it is not open and started, every tool call fails even though
-> your client shows the server as connected. And use the **Beta** build — the panel loads in
-> release, but calls do not come back there.
+> **브릿지 패널은 필수다.** 서버는 프리미어 안에서 도는 CEP 패널을 거쳐 프리미어와 통신한다.
+> 패널을 열고 시작하지 않으면 클라이언트에 "서버 연결됨"으로 떠도 모든 툴 호출이 실패한다.
+> 그리고 **Beta** 빌드를 쓴다. 정식 빌드에서도 패널은 열리지만 호출 결과가 돌아오지 않는다.
 
-Manual install, Windows, npx-without-cloning, and troubleshooting:
+수동 설치, Windows, 클론 없이 npx로 쓰는 법, 문제 해결:
 **[docs/INSTALL.md](docs/INSTALL.md)**
 
-Both workflows also ship as agent skills — `npm run skills:install`. See **[skills/](skills/README.md)**.
+두 워크플로 모두 에이전트 스킬로도 제공한다 — `npm run skills:install`. **[skills/](skills/README.md)** 참고.
 
 ---
 
-## Two things, two prompts
+## 두 가지 기능, 두 개의 프롬프트
 
-The server does exactly two jobs, and ships one prompt for each.
+서버가 하는 일은 딱 두 가지이고, 각각 프롬프트를 하나씩 제공한다.
 
-### 1. `cut_edit_workflow` — cut the timeline
+### 1. `cut_edit_workflow` — 타임라인 컷편집
 
-> "Cut the silences and repeated takes from my active sequence."
+> "지금 시퀀스에서 무음이랑 반복 테이크 잘라줘."
 
-1. **`analyze_sequence_cuts`** — transcribe + categorize + freeze-check the screen. Read-only.
-2. **You review** the plan: what gets cut per category, and for each long gap, static (dead air) or active (demo).
-3. **`apply_sequence_cuts`** — backup → ripple-delete → **verify by re-query**.
+1. **`analyze_sequence_cuts`** — 전사 + 카테고리 분류 + 정지 화면 검사. 읽기 전용이다.
+2. **사용자가 계획을 검토한다.** 카테고리별로 무엇이 잘리는지, 긴 공백 하나하나가 정지(버려도 되는 공백)인지 활성(시연)인지 확인한다.
+3. **`apply_sequence_cuts`** — 백업 → 리플 삭제 → **재조회로 검증**.
 
-Two calls, two gates (approve before, verify after).
+호출 두 번, 관문 두 번(자르기 전 승인, 자른 뒤 검증).
 
-### 2. `caption_review_workflow` — caption the edit
+### 2. `caption_review_workflow` — 편집본 자막
 
-> "Make subtitles for the sequence as it is now."
+> "지금 편집된 상태 그대로 자막 만들어줘."
 
-**It does not transcribe the cut.** `list_sequence_tracks` returns each clip's source
-in/out beside its timeline position — that pairing *is* the source→timeline map. The
-word timestamps you already have get re-projected through it, so the captions are
-frame-accurate after any number of re-edits and cost nothing extra.
+**편집본을 다시 전사하지 않는다.** `list_sequence_tracks`는 클립마다 타임라인 위치와
+원본 in/out을 함께 돌려준다. 이 짝이 곧 원본→타임라인 매핑이다. 이미 가지고 있는
+단어 타임스탬프를 이 매핑으로 다시 투영하기 때문에, 몇 번을 재편집해도 자막이 프레임 단위로
+정확하고 추가 비용도 들지 않는다.
 
-It works on a timeline you cut by hand in Premiere. No cut-edit session required in front of it.
+프리미어에서 손으로 편집한 타임라인에도 그대로 쓸 수 있다. 앞에 컷편집 세션이 없어도 된다.
 
-Re-transcribing an edit is the obvious approach and it is worse in every measurable way:
-slower, and it destroys the corrections you accumulated (a fixed term reverting to
-nonsense, sentences truncated mid-clause). So the server refuses to do it that way.
+편집본을 다시 전사하는 방법이 가장 먼저 떠오르지만, 잴 수 있는 모든 면에서 더 나쁘다.
+느리고, 그동안 쌓아둔 교정이 날아간다(고쳐둔 용어가 다시 엉뚱한 말로 돌아가고, 문장이
+중간에서 잘린다). 그래서 서버는 그 방식을 쓰지 않는다.
 
 ---
 
-## vs the alternatives
+## 다른 도구와 비교
 
-| | this MCP | auto-editor | lossless-cut | Descript |
+| | 이 MCP | auto-editor | lossless-cut | Descript |
 |---|---|---|---|---|
-| Edits your real Premiere timeline | ✅ | export XML | ❌ separate app | ❌ separate app |
-| Silence detection robust to room tone | ✅ word-gap | ⚠️ amplitude | manual | ✅ |
-| Repeated-take / paragraph-retake removal | ✅ | ❌ | ❌ | ⚠️ |
-| Protects live on-screen demos | ✅ freeze check | ❌ | n/a | ❌ |
-| Reviewed plan before cutting | ✅ | ❌ one-shot | manual | ✅ |
-| Backup + re-queried verification | ✅ | n/a | lossless | n/a |
-| Driven from your AI client | ✅ | CLI | GUI | app |
+| 실제 프리미어 타임라인 편집 | ✅ | XML 내보내기 | ❌ 별도 앱 | ❌ 별도 앱 |
+| 룸톤에 강한 무음 탐지 | ✅ 단어 간격 | ⚠️ 음량 | 수동 | ✅ |
+| 반복 테이크·문단 재녹음 제거 | ✅ | ❌ | ❌ | ⚠️ |
+| 화면 시연 구간 보호 | ✅ 정지 화면 검사 | ❌ | 해당 없음 | ❌ |
+| 자르기 전 계획 검토 | ✅ | ❌ 한 번에 실행 | 수동 | ✅ |
+| 백업 + 재조회 검증 | ✅ | 해당 없음 | 무손실 | 해당 없음 |
+| AI 클라이언트로 조작 | ✅ | CLI | GUI | 앱 |
 
 ---
 
-## The tools (26)
+## 툴 (26개)
 
-**Cut · plan:** `analyze_sequence_cuts` · `analyze_speech_edit_points` · `find_speech_spans`
-**Cut · apply:** `apply_sequence_cuts` · `apply_timeline_removals` · `razor_timeline_at_time` · `remove_from_timeline` · `trim_clip`
-**Caption:** `export_captions` · `proofread_transcript` · `read_sequence_captions`
-**Place:** `insert_clip`
-**Safety:** `backup_sequence` · `restore_sequence_backup` · `duplicate_sequence` · `undo` · `save_project`
-**Look:** `export_frame` · `export_sequence`
-**Discovery:** `get_project_info` · `list_sequences` · `get_active_sequence` · `set_active_sequence` · `list_sequence_tracks` · `list_project_items` · `get_clip_properties`
+**컷 · 계획:** `analyze_sequence_cuts` · `analyze_speech_edit_points` · `find_speech_spans`
+**컷 · 적용:** `apply_sequence_cuts` · `apply_timeline_removals` · `razor_timeline_at_time` · `remove_from_timeline` · `trim_clip`
+**자막:** `export_captions` · `proofread_transcript` · `read_sequence_captions`
+**배치:** `insert_clip`
+**안전장치:** `backup_sequence` · `restore_sequence_backup` · `duplicate_sequence` · `undo` · `save_project`
+**확인:** `export_frame` · `export_sequence`
+**조회:** `get_project_info` · `list_sequences` · `get_active_sequence` · `set_active_sequence` · `list_sequence_tracks` · `list_project_items` · `get_clip_properties`
 
 ---
 
-## Measured, not reported
+## 보고가 아니라 실측으로
 
-A cut tool that says it worked is not evidence it worked. This one came back
-`fullyApplied: true`, `inSync: true`, `shortfallSec: 0` while leaving a 27-second
-hole in the timeline. So the change tools now check themselves:
+컷 도구가 "성공했다"고 말하는 것은 성공했다는 증거가 아니다. 이 도구도 한때
+`fullyApplied: true`, `inSync: true`, `shortfallSec: 0`을 돌려주면서 타임라인에
+27초짜리 구멍을 남겼다. 그래서 지금은 타임라인을 바꾸는 툴이 스스로 결과를 확인한다.
 
 ```jsonc
 // apply_timeline_removals / insert_clip
 {
   "fullyApplied": true,
-  "verify": {                    // ← re-queried from the timeline, judge from this
+  "verify": {                    // ← 타임라인에서 다시 조회한 값. 판정은 여기로 한다
     "measuredEndSec": 1279.667,
     "gapCount": 0,
     "contiguous": true,
@@ -129,45 +128,44 @@ hole in the timeline. So the change tools now check themselves:
 }
 ```
 
-If a gap or an A/V mismatch is measured, `success` drops to `false` and
-`verifyProblems` says what is wrong. `list_sequences`.duration reports a stale value
-mid-edit — use `list_sequence_tracks` → `verify.measuredEndSec` instead.
+빈틈이나 오디오·비디오 불일치가 측정되면 `success`가 `false`로 바뀌고
+`verifyProblems`에 무엇이 잘못됐는지 나온다. 편집 중에는 `list_sequences`의 duration이
+갱신되지 않은 값을 돌려주므로, 대신 `list_sequence_tracks` → `verify.measuredEndSec`을 쓴다.
 
-## Trust, engineered
+## 신뢰는 설계로
 
-The cut logic is fuzzed against **1000+ generated transcripts per run** (`npm run simulate`) that assert the invariants a cut must never break — spans never overlap, more is never cut than exists, the held-back intro/outro/demos never leak into the recommended cut, a retake's removal never eats the take it keeps. Two real over-cut bugs were found and fixed this way. It edits your footage; it earns the trust first.
-
----
-
-## Docs
-
-[Install](docs/INSTALL.md) · [Skills](skills/README.md) · [Known issues](docs/KNOWN_ISSUES.md) · [Contributing](docs/CONTRIBUTING.md)
+컷 로직은 실행할 때마다 **자동 생성한 전사 1000개 이상**으로 퍼징한다(`npm run simulate`). 컷이 절대 깨면 안 되는 조건을 검사한다 — 삭제 구간끼리 겹치지 않는다, 있는 것보다 많이 자르지 않는다, 따로 빼둔 인트로·아웃트로·시연이 추천 컷에 섞이지 않는다, 재테이크를 지울 때 남길 테이크까지 먹지 않는다. 실제로 과하게 자르는 버그 두 개를 이 방법으로 찾아 고쳤다. 남의 촬영본을 편집하는 도구이니, 먼저 신뢰를 얻어야 한다.
 
 ---
 
-## Credits
+## 문서
 
-Built on **[hetpatel-11/Adobe_Premiere_Pro_MCP](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP)**.
-That project wrote the CEP bridge and the MCP server that actually talk to Premiere —
-the hard part, and the part this still runs on. None of this exists without it.
+[설치](docs/INSTALL.md) · [스킬](skills/README.md) · [알려진 이슈](docs/KNOWN_ISSUES.md) · [기여 안내](docs/CONTRIBUTING.md)
 
-What this fork is: **one editor's workflow, built on top of that.** A YouTube channel's
-own cut-and-caption process, encoded as skills and prompts, with the server shaped
-around it. Everything here came from editing real footage and hitting real problems:
+---
 
-- speech-based cut detection — word-gap silences and repeated takes, not amplitude
-- freeze checking, so a live on-screen demo is never mistaken for dead air
-- categorized proposals that hold back the intro hook, the outro and long demos
-- mutations that re-query the timeline instead of trusting their own success report
-- a source→timeline map, so an edit can be re-captioned without transcribing it again
-- two agent skills carrying the thresholds and failure modes that cost real re-edits
+## 출처
 
-The general-purpose surface (media management, effects, transitions, titles, render
-queue) was pruned to keep the cut path trustworthy. **If you want full Premiere
-control, use the upstream project** — it does more, and it is the foundation here.
-Take this one if a reviewed cut and frame-accurate captions are what you are after,
-and treat the Korean skills as a worked example to adapt rather than a general answer.
+**[hetpatel-11/Adobe_Premiere_Pro_MCP](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP)** 를 기반으로 만들었다.
+프리미어와 실제로 통신하는 CEP 브릿지와 MCP 서버는 그 프로젝트가 만들었다. 가장 어려운 부분이고,
+이 포크도 여전히 그 위에서 돈다. 그 프로젝트가 없었다면 이것도 없다.
 
-## License
+이 포크는 **그 위에 올린 한 편집자의 워크플로**다. 유튜브 채널 하나가 실제로 쓰는
+컷편집·자막 과정을 스킬과 프롬프트로 옮기고, 서버를 거기에 맞게 다듬었다. 여기 있는 모든 것은
+실제 촬영본을 편집하다 실제 문제에 부딪히며 생겼다.
 
-MIT, © 2025-2026 hetpatel-11. See [LICENSE.md](LICENSE.md).
+- 음량이 아니라 말을 기준으로 한 컷 탐지 — 단어 간격 무음과 반복 테이크
+- 정지 화면 검사 — 화면 시연을 공백으로 착각하지 않도록
+- 인트로 후킹·아웃트로·긴 시연을 따로 빼두는 카테고리형 제안
+- 스스로의 성공 보고를 믿지 않고 타임라인을 다시 조회하는 편집 툴
+- 원본→타임라인 매핑 — 편집본을 다시 전사하지 않고 자막을 다시 만들 수 있도록
+- 실제로 재편집 비용을 치르며 얻은 기준값과 실패 사례를 담은 에이전트 스킬 2개
+
+범용 기능(미디어 관리, 이펙트, 트랜지션, 타이틀, 렌더 큐)은 컷 경로를 믿을 수 있게 유지하려고
+걷어냈다. **프리미어 전체를 제어하고 싶다면 원본 프로젝트를 쓰길 권한다.** 기능이 더 많고,
+이 포크의 토대이기도 하다. 검토를 거친 컷편집과 프레임 단위로 정확한 자막이 필요하다면 이 포크를 쓰고,
+한국어 스킬은 그대로 쓰기보다 각자 상황에 맞게 고쳐 쓰는 예시로 보면 된다.
+
+## 라이선스
+
+MIT, © 2025-2026 hetpatel-11. [LICENSE.md](LICENSE.md) 참고.
