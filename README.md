@@ -20,6 +20,14 @@
   <a href="LICENSE.md">MIT</a>
 </p>
 
+<p align="center">
+  <img src="images/demo.gif" alt="클로드 코드가 프리미어 MCP로 시퀀스를 백업하고 컷 구간을 삭제하는 동안 프리미어 타임라인이 잘려 나가는 화면" width="100%">
+</p>
+
+<p align="center">
+  <sub><em>클로드에게 컷편집을 맡기면 시퀀스를 백업하고, 승인받은 구간을 잘라 낸 뒤 결과를 다시 확인한다.</em></sub>
+</p>
+
 ---
 
 ## 이게 뭔가
