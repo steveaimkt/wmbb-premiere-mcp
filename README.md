@@ -117,10 +117,12 @@ MCP 서버 (node)    요청을 임시 폴더에 파일로 쓴다
 
 ## 설치
 
-**Adobe Premiere Pro (Beta)**, **Node 18 이상**, **Python과 faster-whisper**, **ffmpeg**가 필요하다.
+**Adobe Premiere Pro (Beta)**, **Node 18 이상**, **Python과 faster-whisper**(`pip install faster-whisper`), **ffmpeg**가 필요하다. 프리미어, AI 클라이언트, 이 서버는 **같은 컴퓨터**에 있어야 한다.
 Beta는 Creative Cloud의 「앱 → 베타 앱」에서 설치한다. 정식 빌드와 따로 설치되므로 기존 프로젝트에는 영향이 없다.
 
-### macOS (추천)
+설치는 세 단계다. ① 서버를 받아 빌드하고 → ② 프리미어에 브릿지 패널을 설치하고 → ③ AI 클라이언트에 서버를 등록한다. macOS에서는 아래 명령 하나로 세 단계가 모두 끝난다(클라이언트 등록은 클로드 데스크톱만 자동이다).
+
+### 1. macOS 자동 설치 (추천)
 
 ```bash
 git clone https://github.com/steveaimkt/wmbb-premiere-mcp
@@ -128,23 +130,73 @@ cd wmbb-premiere-mcp
 npm run setup:mac
 ```
 
-이 명령 하나가 빌드, 브릿지 패널 설치, 클로드 데스크톱 연결까지 한다. 끝나면 프리미어(Beta)에서 이렇게 한다.
+`setup:mac` 은 다음을 차례로 한다.
+
+1. `npm install` 과 `npm run build`
+2. 서명되지 않은 패널이 열리도록 Adobe CEP 디버그 모드(`PlayerDebugMode`)를 켠다
+3. 브릿지 패널(`cep-plugin/`)을 `~/Library/Application Support/Adobe/CEP/extensions/MCPBridgeCEP` 에 복사한다
+4. 브릿지 임시 폴더 `/tmp/premiere-mcp-bridge` 를 만든다
+5. 클로드 데스크톱 설정에 `premiere-pro` 서버를 추가한다
+
+### 2. 프리미어에서 브릿지 켜기
 
 1. 설치하는 동안 프리미어가 열려 있었다면 다시 시작한다
-2. `Window > Extensions > MCP Bridge (CEP)` 를 연다
+2. **프리미어(Beta)** 에서 `Window > Extensions > MCP Bridge (CEP)` 를 연다
 3. **Temp Directory** 를 `/tmp/premiere-mcp-bridge` 로 지정한다
 4. **Save Configuration** → **Start Bridge** → **Test Connection**
 
-Test Connection이 통과하면 AI 클라이언트를 다시 시작하고, 프리미어(Beta)에서 프로젝트를 연 뒤 「지금 프리미어 프로젝트 정보 알려줘」라고 입력한다.
+Test Connection이 통과해야 다음으로 넘어간다. 메뉴에 패널이 보이지 않으면 프리미어 환경설정에서 **UXP Plugins > Enable developer mode** 를 켜고 프리미어를 다시 시작한다.
 
-### 클로드 코드
+### 3. AI 클라이언트에 등록하기
 
-`npm run setup:mac` 을 마친 뒤 서버를 등록한다.
+**클로드 데스크톱** — `setup:mac` 이 이미 등록했다. 앱을 다시 시작하면 된다.
+
+**클로드 코드**
 
 ```bash
 claude mcp add premiere-pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge \
   -- node /절대경로/wmbb-premiere-mcp/dist/index.js
 ```
+
+**Codex** — 반드시 한 줄로 입력한다.
+
+```bash
+codex mcp add premiere_pro --env PREMIERE_TEMP_DIR=/tmp/premiere-mcp-bridge -- node /절대경로/wmbb-premiere-mcp/dist/index.js
+```
+
+**그 밖의 MCP 클라이언트** — 설정 파일에 이렇게 넣는다.
+
+```json
+{
+  "mcpServers": {
+    "premiere-pro": {
+      "command": "node",
+      "args": ["/절대경로/wmbb-premiere-mcp/dist/index.js"],
+      "env": { "PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge" }
+    }
+  }
+}
+```
+
+등록한 뒤 클라이언트를 다시 시작하고, 프리미어(Beta)에서 프로젝트를 연 채로 「지금 프리미어 프로젝트 정보 알려줘」라고 입력한다. 프로젝트 이름과 시퀀스가 나오면 설치가 끝난 것이다.
+
+### 클론 없이 실행하기
+
+서버만 GitHub에서 바로 실행할 수도 있다.
+
+```json
+{
+  "mcpServers": {
+    "premiere-pro": {
+      "command": "npx",
+      "args": ["-y", "github:steveaimkt/wmbb-premiere-mcp"],
+      "env": { "PREMIERE_TEMP_DIR": "/tmp/premiere-mcp-bridge" }
+    }
+  }
+}
+```
+
+이 방법은 서버만 설치한다. **브릿지 패널은 따로 설치해야 한다** ([수동 설치 2~4단계](docs/INSTALL.md#macos--manual)).
 
 ### 스킬 (선택)
 
@@ -154,7 +206,26 @@ npm run skills:install
 
 `~/.claude/skills/` 에 링크로 설치된다. 저장소를 `git pull` 하면 스킬도 함께 바뀐다. 설치한 뒤 클라이언트를 다시 시작하면 「컷편집 시작하자」「자막 검수 시작하자」로 부를 수 있다.
 
-> **점검.** 연결이 안 되면 `npm run setup:doctor` 를 실행한다. 빌드, 브릿지 패널, 디버그 모드, 클라이언트 설정 중 무엇이 빠졌는지 알려 준다. Windows 설치, 클론 없이 npx로 실행하는 방법, 문제 해결 순서는 [docs/INSTALL.md](docs/INSTALL.md) 에 있다.
+### 원본 프로젝트의 설치 방법과 무엇이 다른가
+
+[원본 프로젝트](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP#install)는 npm 패키지(`npm install -g adobe-premiere-pro-mcp`), 클로드 코드·Codex 플러그인, 클로드 데스크톱 원클릭 번들(`.mcpb`)로도 설치할 수 있다. **이 방법들은 원본 서버(툴 283개)를 설치한다.** 이 포크의 컷편집·자막 기능은 들어 있지 않다. 이 포크는 위의 저장소 클론 방식으로 설치한다.
+
+### 설치 확인과 문제 해결
+
+```bash
+npm run setup:doctor
+```
+
+빌드, 브릿지 패널, 디버그 모드, 클라이언트 설정 중 무엇이 빠졌는지 알려 준다. 클라이언트에는 서버가 연결됐다고 뜨는데 툴 호출이 실패하면 아래 순서로 확인한다.
+
+| 확인할 것 | 고치는 법 |
+|---|---|
+| 프리미어 **(Beta)** 에서 프로젝트를 열었나 | 둘 다 필요하다. 정식 빌드에서 연 프로젝트는 브릿지가 보지 못한다 |
+| 브릿지 패널을 열고 **Start Bridge** 했나 | `Window > Extensions > MCP Bridge (CEP)` → Start Bridge |
+| 패널의 Temp Directory와 클라이언트의 `PREMIERE_TEMP_DIR` 가 같나 | 둘 다 `/tmp/premiere-mcp-bridge` |
+| 패널을 연 뒤에 저장소를 업데이트했나 | 패널을 오른쪽 클릭 → **Reload** |
+
+그래도 안 되면 패널의 **Run Diagnostics** 를 누르고 `/tmp/premiere-mcp-bridge/premiere-mcp-diagnostics-latest.json` 을 확인한다. Windows 설치와 수동 설치는 [docs/INSTALL.md](docs/INSTALL.md) 에 있다. 지울 때는 `npm run uninstall:mac`.
 
 ## 툴 26개
 
