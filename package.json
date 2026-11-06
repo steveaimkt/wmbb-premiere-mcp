@@ -16,7 +16,8 @@
     "format": "prettier --write src/**/*.ts",
     "simulate": "node scripts/simulate-cuts.mjs 1000",
     "prepare": "npm run build",
-    "skills:install": "bash ./scripts/install-skills.sh"
+    "skills:install": "bash ./scripts/install-skills.sh",
+    "voice-orders": "node dist/voiceOrders/main.js"
   },
   "keywords": [
     "mcp",

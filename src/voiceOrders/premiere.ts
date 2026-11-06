@@ -1,0 +1,119 @@
+/**
+ * Premiere operations the daemon needs, behind a small port so the pipeline
+ * can be tested without Premiere. BridgePremierePort goes through the existing
+ * file bridge and the MCP tools (which carry the verify contract).
+ */
+import type { PremiereProTransport } from '../bridge/types.js';
+import type { PremiereProTools } from '../tools/index.js';
+import type { PlacedCaption, ZoomKey } from './timing.js';
+import type { Settings, VoiceOrder } from './types.js';
+
+export interface PremierePort {
+  activeSequence(): Promise<{ id: string; projectPath: string } | null>;
+  playhead(): Promise<number | null>;
+  setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'gray'): Promise<string | null>;
+  existingCaptions(seqId: string): Promise<{ startSec: number; endSec: number }[]>;
+  backup(seqId: string): Promise<boolean>;
+  placeCaption(c: PlacedCaption): Promise<{ ok: boolean; error?: string }>;
+  zoom(atSec: number, keys: ZoomKey[]): Promise<{ ok: boolean; error?: string }>;
+}
+
+/** Marker colour indices (Premiere: 0 green … 7). Confirm in Task 1 probes. */
+export const MARKER_COLOR = { green: 0, orange: 3, gray: 7 } as const;
+
+function parse(r: any): any {
+  if (typeof r === 'string') { try { return JSON.parse(r); } catch { return { success: false, error: r }; } }
+  return r ?? {};
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(fallback), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(fallback); });
+  });
+}
+
+export class BridgePremierePort implements PremierePort {
+  /** Hotkey-path calls must not hang for the bridge's 60s timeout when the panel is off. */
+  private readonly quickMs: number;
+  constructor(
+    private readonly bridge: PremiereProTransport,
+    private readonly tools: PremiereProTools,
+    private readonly settings: () => Settings,
+    opts: { quickMs?: number } = {},
+  ) {
+    this.quickMs = opts.quickMs ?? 2500;
+  }
+
+  async activeSequence() {
+    const r = parse(await withTimeout(this.bridge.executeScript(`
+      var s = app.project.activeSequence;
+      if (!s) return JSON.stringify({ success: false });
+      return JSON.stringify({ success: true, id: s.sequenceID, projectPath: app.project.path });
+    `), this.quickMs, null));
+    return r?.success ? { id: String(r.id), projectPath: String(r.projectPath) } : null;
+  }
+
+  async playhead() {
+    const r = parse(await withTimeout(this.bridge.executeScript(`
+      var s = app.project.activeSequence;
+      if (!s) return JSON.stringify({ success: false });
+      return JSON.stringify({ success: true, timeSec: s.getPlayerPosition().seconds });
+    `), this.quickMs, null));
+    return r?.success && typeof r.timeSec === 'number' ? r.timeSec : null;
+  }
+
+  async setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'gray') {
+    if (o.timeSec === null) return null;
+    const label = o.payload?.kind === 'caption' ? o.payload.text : o.payload?.kind === 'zoom' ? `확대 ${o.payload.scale}%` : (o.transcript ?? '음성 지시');
+    const r = parse(await this.tools.executeTool('set_marker', {
+      sequenceId: o.sequenceId ?? undefined,
+      timeSec: o.timeSec,
+      name: `[AI] ${label}`.slice(0, 120),
+      comments: o.transcript ?? '',
+      colorIndex: MARKER_COLOR[color],
+      ...(o.markerId ? { markerId: o.markerId } : {}),
+    }));
+    return r?.success ? String(r.markerId) : null;
+  }
+
+  async existingCaptions(seqId: string) {
+    const r = parse(await this.tools.executeTool('list_sequence_tracks', { sequenceId: seqId, includeSourceTimes: false, compact: false }));
+    const name = this.settings().captionTrackName;
+    const track = (r?.videoTracks ?? []).find((t: any) => t?.name === name);
+    return (track?.clips ?? []).map((c: any) => ({ startSec: Number(c.startTime), endSec: Number(c.endTime) }));
+  }
+
+  async backup(seqId: string) {
+    const r = parse(await this.tools.executeTool('backup_sequence', { sequenceId: seqId, label: 'before-voice-orders' }));
+    return r?.success === true;
+  }
+
+  async placeCaption(c: PlacedCaption) {
+    const s = this.settings();
+    const r = parse(await this.tools.executeTool('place_mogrt_text', {
+      templatePath: s.captionTemplatePath,
+      trackName: s.captionTrackName,
+      startSec: c.startSec,
+      endSec: c.endSec,
+      text: c.text,
+      clipName: `AI 자막 ${c.orderId.slice(0, 8)}`,
+    }));
+    return r?.success ? { ok: true } : { ok: false, error: String(r?.error ?? 'place_mogrt_text failed') };
+  }
+
+  async zoom(atSec: number, keys: ZoomKey[]) {
+    const tracks = parse(await this.tools.executeTool('list_sequence_tracks', { includeSourceTimes: false, compact: false }));
+    const v1 = (tracks?.videoTracks ?? [])[0];
+    const clip = (v1?.clips ?? []).find((c: any) => c.startTime <= atSec && atSec < c.endTime);
+    if (!clip) return { ok: false, error: `V1에 ${atSec.toFixed(2)}초를 덮는 클립이 없음` };
+    const r = parse(await this.tools.executeTool('set_clip_motion', {
+      clipId: String(clip.id),
+      keyframes: keys.map((k) => ({ time: k.time, scale: k.scale, position: k.position })),
+      timeBase: 'sequence',
+      interpolation: 'bezier',
+      clearExisting: false,
+    }));
+    return r?.success ? { ok: true } : { ok: false, error: String(r?.error ?? 'set_clip_motion failed') };
+  }
+}

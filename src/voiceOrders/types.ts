@@ -33,8 +33,10 @@ export interface VoiceOrder {
   status: OrderStatus;
   checked: boolean;
   /** Premiere marker id, once one has been placed. */
-  markerId?: string | null;
-  error?: string;
+  markerId?: string | null | undefined;
+  /** Interpreter outcome, kept so a no_position order regains ready/unpolished once a time is set. */
+  polished?: boolean | undefined;
+  error?: string | undefined;
 }
 
 export interface Settings {
