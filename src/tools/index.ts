@@ -167,6 +167,38 @@ export class PremiereProTools {
         })
       },
       {
+        name: 'get_playhead',
+        description: 'Reads the playhead (CTI) position of a sequence in seconds.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence. Defaults to the active sequence.')
+        })
+      },
+      {
+        name: 'set_marker',
+        description: 'Creates a sequence marker, or updates/moves an existing one when markerId (the marker guid) is given. Re-reads the marker: name or time mismatch → success:false. Colour indices on 26.5.2: 0 green, 1 red, 2 purple, 3 orange, 4 yellow, 5 white, 6 blue, 7 cyan.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence. Defaults to the active sequence.'),
+          timeSec: z.number().min(0).describe('Marker time in seconds.'),
+          name: z.string().describe('Marker name.'),
+          comments: z.string().optional().describe('Marker comments.'),
+          colorIndex: z.number().int().min(0).max(7).optional().describe('Marker colour index (see description).'),
+          markerId: z.string().optional().describe('guid of a marker to update instead of creating one. If it no longer exists, a new marker is created.')
+        })
+      },
+      {
+        name: 'place_mogrt_text',
+        description: 'Places an After Effects .mogrt on the video track named trackName (adds a top video track with that name if missing), sets its first editable text, trims it to [startSec, endSec] and names the clip. Re-reads start/end/text: any mismatch → success:false. A Premiere-authored .mogrt has no scriptable text and is rejected (the placed clip is removed).',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence. Defaults to the active sequence.'),
+          templatePath: z.string().describe('Absolute path of the .mogrt (must be authored in After Effects).'),
+          trackName: z.string().describe('Video track name, e.g. "AI 자막".'),
+          startSec: z.number().min(0).describe('Start time in seconds.'),
+          endSec: z.number().min(0).describe('End time in seconds (> startSec).'),
+          text: z.string().describe('Text to set.'),
+          clipName: z.string().optional().describe('Clip name. Defaults to the text.')
+        })
+      },
+      {
         name: 'get_project_info',
         description: 'Gets comprehensive information about the current project including name, path, settings, and status.',
         inputSchema: z.object({})
@@ -498,6 +530,12 @@ export class PremiereProTools {
           return await this.setClipMotion(args);
         case 'set_track_mute':
           return await this.setTrackMute(args);
+        case 'get_playhead':
+          return await this.getPlayhead(args);
+        case 'set_marker':
+          return await this.setMarker(args);
+        case 'place_mogrt_text':
+          return await this.placeMogrtText(args);
         case 'get_project_info':
           return await this.getProjectInfo();
         case 'save_project':
@@ -1335,6 +1373,143 @@ export class PremiereProTools {
       success: problems.length === 0,
       verify: reread,
       verified: problems.length === 0,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  private seqExpr(sequenceId?: string): string {
+    return sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence';
+  }
+
+  private async getPlayhead(args: any): Promise<any> {
+    const r = await this.runScript(`
+      try {
+        var seq = ${this.seqExpr(args?.sequenceId)};
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, timeSec: Number(seq.getPlayerPosition().seconds) });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    return JSON.stringify(r);
+  }
+
+  private async setMarker(args: any): Promise<any> {
+    const { sequenceId, timeSec, name, comments = '', colorIndex, markerId } = args ?? {};
+    const find = `
+        var seq = ${this.seqExpr(sequenceId)};
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        function __findMarker(guid) {
+          if (!guid) return null;
+          var m = seq.markers.getFirstMarker();
+          while (m) { if (m.guid === guid) return m; m = seq.markers.getNextMarker(m); }
+          return null;
+        }`;
+    const result = await this.runScript(`
+      try {
+        ${find}
+        var t = ${JSON.stringify(timeSec)};
+        var m = __findMarker(${JSON.stringify(markerId ?? '')});
+        // 26.5.2: marker.start/end take a number of seconds; a Time object throws, and start.seconds = x is a silent no-op
+        if (m) { m.start = t; m.end = t; }
+        else m = seq.markers.createMarker(t);
+        m.name = ${JSON.stringify(name)};
+        m.comments = ${JSON.stringify(comments)};
+        ${colorIndex === undefined ? '' : `m.setColorByIndex(${JSON.stringify(colorIndex)});`}
+        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, markerId: m.guid });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    if (!result || result.success === false) return JSON.stringify(result);
+    const reread = await this.runScript(`
+      try {
+        ${find}
+        var m = __findMarker(${JSON.stringify(result.markerId)});
+        if (!m) return JSON.stringify({ success: true, found: false });
+        return JSON.stringify({ success: true, found: true, timeSec: Number(m.start.seconds), name: m.name, colorIndex: m.getColorByIndex() });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    const problems: string[] = [];
+    if (!reread?.success || !reread.found) problems.push('marker not found on re-read');
+    else {
+      if (Math.abs(reread.timeSec - timeSec) > 0.05) problems.push(`time reads ${reread.timeSec}, wanted ${timeSec}`);
+      if (reread.name !== name) problems.push(`name reads "${reread.name}"`);
+      if (colorIndex !== undefined && reread.colorIndex !== colorIndex) problems.push(`colour reads ${reread.colorIndex}, wanted ${colorIndex}`);
+    }
+    return JSON.stringify({
+      ...result,
+      success: problems.length === 0,
+      verify: reread?.found ? { timeSec: reread.timeSec, name: reread.name, colorIndex: reread.colorIndex } : null,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  private async placeMogrtText(args: any): Promise<any> {
+    const { sequenceId, templatePath, trackName, startSec, endSec, text, clipName } = args ?? {};
+    if (!(endSec > startSec)) return JSON.stringify({ success: false, error: 'endSec must be greater than startSec' });
+    const TPS = 254016000000;
+    const result = await this.runScript(`
+      try {
+        var seq = ${this.seqExpr(sequenceId)};
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var f = new File(${JSON.stringify(templatePath)});
+        if (!f.exists) return JSON.stringify({ success: false, error: "template not found: " + f.fsName });
+        var trackName = ${JSON.stringify(trackName)}, trk = -1;
+        for (var v = 0; v < seq.videoTracks.numTracks; v++) if (seq.videoTracks[v].name === trackName) trk = v;
+        var addedTrack = false;
+        if (trk < 0) {
+          if (!app.project.activeSequence || app.project.activeSequence.sequenceID !== seq.sequenceID) app.project.openSequence(seq.sequenceID);
+          app.enableQE();
+          var n0 = seq.videoTracks.numTracks;
+          qe.project.getActiveSequence().addTracks(1, n0, 0);
+          if (seq.videoTracks.numTracks !== n0 + 1) return JSON.stringify({ success: false, error: "could not add a video track for " + trackName });
+          trk = n0; seq.videoTracks[trk].name = trackName; addedTrack = true;
+        }
+        var track = seq.videoTracks[trk], before = {};
+        for (var i = 0; i < track.clips.numItems; i++) before[track.clips[i].nodeId] = 1;
+        var startSec = ${JSON.stringify(startSec)}, endSec = ${JSON.stringify(endSec)};
+        seq.importMGT(f.fsName, String(Math.round(startSec * ${TPS})), trk, 0);
+        var clip = null;
+        for (var j = 0; j < track.clips.numItems; j++) {
+          var c = track.clips[j];
+          if (!before[c.nodeId] && Math.abs(c.start.seconds - startSec) < 0.05) clip = c;
+        }
+        if (!clip) return JSON.stringify({ success: false, error: "placed graphic not found on re-read" });
+        var mgt = clip.getMGTComponent ? clip.getMGTComponent() : null, prop = null;
+        if (mgt) for (var p = 0; p < mgt.properties.numItems; p++) {
+          var val = ""; try { val = String(mgt.properties[p].getValue()); } catch (e1) {}
+          if (val.indexOf("textEditValue") >= 0) { prop = mgt.properties[p]; break; }
+        }
+        if (!prop) { clip.remove(false, false); return JSON.stringify({ success: false, error: "template has no editable text (not an After Effects .mogrt?)" }); }
+        var doc = JSON.parse(String(prop.getValue()));
+        doc.textEditValue = ${JSON.stringify(text)};
+        prop.setValue(JSON.stringify(doc), 1);
+        var e = new Time(); e.seconds = endSec; clip.end = e;
+        clip.name = ${JSON.stringify(clipName ?? text)};
+        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, clipId: clip.nodeId, trackIndex: trk, addedTrack: addedTrack });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    if (!result || result.success === false) return JSON.stringify(result);
+    const reread = await this.runScript(`
+      try {
+        var hit = __findClipInSequence(${this.seqExpr(result.sequenceId)}, ${JSON.stringify(result.clipId)});
+        if (!hit) return JSON.stringify({ success: true, found: false });
+        var clip = hit.clip, mgt = clip.getMGTComponent ? clip.getMGTComponent() : null, txt = null;
+        if (mgt) for (var p = 0; p < mgt.properties.numItems; p++) {
+          var val = ""; try { val = String(mgt.properties[p].getValue()); } catch (e1) {}
+          if (val.indexOf("textEditValue") >= 0) { txt = JSON.parse(val).textEditValue; break; }
+        }
+        return JSON.stringify({ success: true, found: true, startSec: clip.start.seconds, endSec: clip.end.seconds, text: txt, name: clip.name, trackIndex: hit.trackIndex });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    const problems: string[] = [];
+    if (!reread?.success || !reread.found) problems.push('clip not found on re-read');
+    else {
+      if (Math.abs(reread.startSec - startSec) > 0.05) problems.push(`start reads ${reread.startSec}, wanted ${startSec}`);
+      if (Math.abs(reread.endSec - endSec) > 0.05) problems.push(`end reads ${reread.endSec}, wanted ${endSec}`);
+      if (reread.text !== text) problems.push(`text reads ${JSON.stringify(reread.text)}`);
+    }
+    return JSON.stringify({
+      ...result,
+      success: problems.length === 0,
+      verify: reread?.found ? { startSec: reread.startSec, endSec: reread.endSec, text: reread.text, name: reread.name } : null,
       verifyProblems: problems.length ? problems : null,
     });
   }

@@ -18,7 +18,6 @@ export interface PremierePort {
   zoom(seqId: string, atSec: number, keys: ZoomKey[]): Promise<{ ok: boolean; error?: string }>;
 }
 
-/** Marker colour indices (Premiere: 0 green … 7). Confirm in Task 1 probes. */
 // 26.5.2 실측: 0 초록 1 빨강 2 보라 3 주황 4 노랑 5 흰색 6 파랑 7 청록 (회색 없음)
 export const MARKER_COLOR = { green: 0, orange: 3, white: 5 } as const;
 
@@ -99,9 +98,10 @@ export class BridgePremierePort implements PremierePort {
       startSec: c.startSec,
       endSec: c.endSec,
       text: c.text,
-      clipName: `AI 자막 ${c.orderId.slice(0, 8)}`,
+      clipName: c.text,
     }));
-    return r?.success ? { ok: true } : { ok: false, error: String(r?.error ?? 'place_mogrt_text failed') };
+    if (r?.success) return { ok: true };
+    return { ok: false, error: String(r?.error ?? (Array.isArray(r?.verifyProblems) ? r.verifyProblems.join('; ') : 'place_mogrt_text failed')) };
   }
 
   async zoom(seqId: string, atSec: number, keys: ZoomKey[]) {
@@ -110,6 +110,15 @@ export class BridgePremierePort implements PremierePort {
     const v1 = (tracks?.videoTracks ?? [])[0];
     const clip = (v1?.clips ?? []).find((c: any) => c.startTime <= atSec && atSec < c.endTime);
     if (!clip) return { ok: false, error: `V1에 ${atSec.toFixed(2)}초를 덮는 클립이 없음` };
+    // A zoom that would run past the clip's end is pulled back so it eases out inside the clip
+    // (set_clip_motion rejects keys outside the clip). Too short for both ramps → refuse.
+    const end = Number(clip.endTime) - 1 / 60;
+    const last = keys[keys.length - 1];
+    if (last && last.time > end) {
+      const d = last.time - end;
+      keys = keys.map((k, i) => (i >= keys.length - 2 ? { ...k, time: k.time - d } : k));
+      if (keys.length >= 3 && keys[keys.length - 2]!.time <= keys[1]!.time) return { ok: false, error: `V1 클립이 ${(Number(clip.endTime) - atSec).toFixed(2)}초 뒤에 끝나서 확대할 공간이 없음` };
+    }
     const r = parse(await this.tools.executeTool('set_clip_motion', {
       clipId: String(clip.id),
       sequenceId: seqId,

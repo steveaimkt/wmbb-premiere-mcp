@@ -42,6 +42,8 @@ async function loadToken(): Promise<string> {
 async function main(): Promise<void> {
   const saved = await readJsonOr<Partial<Settings>>(settingsPath(), {});
   const settings: Settings = { ...DEFAULT_SETTINGS, ...saved, zoomDefaults: { ...DEFAULT_SETTINGS.zoomDefaults, ...(saved.zoomDefaults ?? {}) } };
+  // Bundled AE template (the Premiere-authored 1말하는자막.mogrt cannot have its text set from script).
+  if (!settings.captionTemplatePath) settings.captionTemplatePath = join(repoRoot, 'cep-plugin', 'assets', 'voice-orders-caption.mogrt');
   const glossary = await Glossary.load(glossaryPath());
 
   const bridge = new PremiereProBridge();
