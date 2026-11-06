@@ -30,11 +30,22 @@ describe('OrderStore', () => {
   test('save then load round-trips', async () => {
     const d = dir();
     const s = new OrderStore(d);
-    s.add(order({ id: 'a', timeSec: 3 }));
-    s.add(order({ id: 'b', timeSec: 1 }));
+    s.add(order({ id: 'a', timeSec: 3, status: 'ready' }));
+    s.add(order({ id: 'b', timeSec: 1, status: 'applied' }));
     await s.save();
     const back = await OrderStore.load(d);
     expect(back.list()).toEqual(s.list());
+  });
+
+  test('an order left processing by a restart loads as failed/interrupted (retry and delete work)', async () => {
+    const d = dir();
+    const s = new OrderStore(d);
+    s.add(order({ id: 'p', status: 'processing' }));
+    s.add(order({ id: 'r', status: 'ready' }));
+    await s.save();
+    const back = await OrderStore.load(d);
+    expect(back.get('p')).toMatchObject({ status: 'failed', error: expect.stringMatching(/중단/) });
+    expect(back.get('r')!.status).toBe('ready');
   });
 
   test('load of missing dir starts empty', async () => {

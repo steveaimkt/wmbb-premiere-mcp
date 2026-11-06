@@ -34,7 +34,10 @@ export class OrderStore {
   static async load(dir: string): Promise<OrderStore> {
     const s = new OrderStore(dir);
     const data = await readJsonOr<{ orders: VoiceOrder[] }>(join(dir, 'orders.json'), { orders: [] });
-    for (const o of data.orders ?? []) s.orders.set(o.id, o);
+    for (const o of data.orders ?? []) {
+      // A daemon restart mid-pipeline leaves 'processing' behind with nothing to finish it.
+      s.orders.set(o.id, o.status === 'processing' ? { ...o, status: 'failed', error: '처리 중 중단됨 — 다시 처리하세요' } : o);
+    }
     return s;
   }
 
