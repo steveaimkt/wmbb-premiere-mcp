@@ -17,6 +17,7 @@ import { glossaryPath, projectDir, settingsPath, tokenPath } from './paths.js';
 import { randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import { BridgePremierePort } from './premiere.js';
+import { KEYCHAIN_SERVICE, readMacKeychain, resolveApiKey } from './apiKey.js';
 import { OrderStore } from './store.js';
 import { SttWorker } from './stt.js';
 import { DEFAULT_SETTINGS, type Settings } from './types.js';
@@ -57,11 +58,17 @@ async function main(): Promise<void> {
   });
   stt.start().catch((e) => console.error('[voice-orders] stt worker failed to start:', e.message));
 
+  // launchd gives no shell env: the key comes from the login keychain (see apiKey.ts).
+  const apiKey = resolveApiKey(process.env, readMacKeychain);
+  if (!apiKey.key) {
+    console.error(`[voice-orders] no Anthropic API key — orders stay unpolished. Store one with:\n  security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a anthropic -w`);
+  } else console.log(`[voice-orders] API key from ${apiKey.source}`);
+
   const stores = new Map<string, Promise<OrderStore>>();
   const daemon = new VoiceOrdersDaemon({
     premiere: new BridgePremierePort(bridge, tools, () => settings),
     stt,
-    interpreter: new Interpreter({ client: new Anthropic(), model: settings.model, glossary }),
+    interpreter: new Interpreter({ client: new Anthropic({ apiKey: apiKey.key ?? 'missing-api-key' }), model: settings.model, glossary }),
     storeFor: (p) => {
       if (!stores.has(p)) stores.set(p, OrderStore.load(projectDir(p)));
       return stores.get(p)!;
