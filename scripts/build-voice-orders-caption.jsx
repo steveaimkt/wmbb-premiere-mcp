@@ -1,5 +1,5 @@
 // After Effects 2026에서 실행: 음성 지시 자막 템플릿(.mogrt)을 만든다.
-// 모양은 기존 "1말하는자막"(프리미어에서 만든 템플릿)을 따라 한다: 흰 글씨, 얇은 고딕, 아래 가운데, 은은한 그림자.
+// 모양은 실제 영상에 쓰인 자막을 따라 한다: 흰 글씨(산돌고딕 Neo Medium 48), 아래 가운데, 글자 길이에 맞는 검은 반투명 상자.
 // 텍스트 하나를 Essential Graphics에 "Text"로 노출 → 프리미어에서 getMGTComponent()로 문구를 바꿀 수 있다.
 // 사용: osascript -e 'tell application "Adobe After Effects 2026" to DoScriptFile "<이 파일>"'
 // 출력 경로는 $.global.VO_OUT 또는 기본값(저장소 cep-plugin/assets/voice-orders-caption.mogrt).
@@ -14,25 +14,36 @@
   var comp = app.project.items.addComp('voice-orders-caption', 1920, 1080, 1, 10, 60);
 
   var layer = comp.layers.addText('텍스트');
+  layer.name = 'Text';
   var st = layer.property('Source Text');
   var doc = st.value;
   doc.resetCharStyle();
-  doc.font = 'AppleSDGothicNeo-Light';
-  doc.fontSize = 74;
+  doc.font = 'AppleSDGothicNeo-Medium';
+  doc.fontSize = 48;
   doc.applyFill = true;
   doc.fillColor = [1, 1, 1];
   doc.applyStroke = false;
   doc.justification = ParagraphJustification.CENTER_JUSTIFY;
   doc.text = '텍스트';
   st.setValue(doc);
-  // 기존 템플릿 위치: 세로 0.859 (프리미어 텍스트 위치 값)
-  layer.property('Position').setValue([960, Math.round(1080 * 0.859)]);
+  // 실제 영상 자막 실측(1920x1080): 상자 세로 888~966, 가운데 정렬 → 글자 기준선 약 945
+  layer.property('Position').setValue([960, 945]);
 
-  var sh = layer.property('Effects').addProperty('ADBE Drop Shadow');
-  sh.property('ADBE Drop Shadow-0001').setValue([0, 0, 0, 1]); // 색
-  sh.property('ADBE Drop Shadow-0002').setValue(204);          // 불투명도 80%
-  sh.property('ADBE Drop Shadow-0004').setValue(2);            // 거리
-  sh.property('ADBE Drop Shadow-0005').setValue(10);           // 부드러움
+  // 글자 뒤 검은 상자: 글자 길이에 맞춰 늘어난다(sourceRectAtTime). 문구가 비면 숨김.
+  var box = comp.layers.addShape();
+  box.name = 'Box';
+  box.moveAfter(layer);
+  var grp = box.property('Contents').addProperty('ADBE Vector Group');
+  var rect = grp.property('Contents').addProperty('ADBE Vector Shape - Rect');
+  rect.property('Size').expression =
+    'var r = thisComp.layer("Text").sourceRectAtTime(time, false); [r.width + 36, r.height + 30];';
+  var fill = grp.property('Contents').addProperty('ADBE Vector Graphic - Fill');
+  fill.property('Color').setValue([0, 0, 0, 1]);
+  box.property('Transform').property('Anchor Point').setValue([0, 0]);
+  box.property('Transform').property('Position').expression =
+    'var t = thisComp.layer("Text"), r = t.sourceRectAtTime(time, false); t.toComp([r.left + r.width / 2, r.top + r.height / 2]);';
+  box.property('Transform').property('Opacity').expression =
+    'thisComp.layer("Text").sourceRectAtTime(time, false).width > 0 ? 85 : 0;';
 
   // 저장 안 된 프로젝트면 내보내기가 "다른 이름으로 저장" 창을 띄우고 멈춘다(26.x 실측) → 임시 파일로 먼저 저장.
   app.project.save(new File(Folder.temp.fsName + '/voice-orders-caption-build.aep'));
