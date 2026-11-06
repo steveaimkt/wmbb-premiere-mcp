@@ -1,4 +1,6 @@
-// After Effects 2026에서 실행: 음성 지시 자막 템플릿(.mogrt)을 만든다.
+// After Effects 2026에서 실행: 음성 지시 자막 템플릿(.mogrt)을 처음부터 만든다.
+// ⚠️ 2026-11-07부터 원본은 손으로 다듬은 cep-plugin/assets/voice-orders-caption.aep 이다(글꼴 DSAEndEndEnd-Regular).
+//    이 스크립트를 다시 돌리면 그 수정이 덮어써진다. 수정은 .aep를 열어 하고 scripts/export-voice-orders-caption.jsx로 내보낼 것.
 // 모양은 실제 영상에 쓰인 자막을 따라 한다: 흰 글씨(산돌고딕 Neo Medium 48), 아래 가운데, 글자 길이에 맞는 검은 반투명 상자.
 // 텍스트 하나를 Essential Graphics에 "Text"로 노출 → 프리미어에서 getMGTComponent()로 문구를 바꿀 수 있다.
 // 사용: osascript -e 'tell application "Adobe After Effects 2026" to DoScriptFile "<이 파일>"'
