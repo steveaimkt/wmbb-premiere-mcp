@@ -7,7 +7,8 @@ UID_N="$(id -u)"
 LA="$HOME/Library/LaunchAgents"
 LOGS="$HOME/Library/Logs"
 EXT="$HOME/Library/Application Support/Adobe/CEP/extensions/MCPBridgeCEP"
-NODE="$(command -v node)"
+NODE="$(command -v node || true)"
+if [ -z "$NODE" ]; then echo "node를 찾을 수 없습니다(PATH). Node를 설치하거나 PATH에 넣은 뒤 다시 실행하세요." >&2; exit 1; fi
 PY="${PYTHON_PATH:-$HOME/.local/share/premiere-dub-edit/venv/bin/python}"
 TEMP_DIR="${PREMIERE_TEMP_DIR:-/tmp/premiere-mcp-bridge}"
 DAEMON=com.wmbb.voice-orders.daemon
@@ -68,7 +69,9 @@ cat > "$LA/$HOTKEY.plist" <<EOF
 EOF
 for L in $DAEMON $HOTKEY; do
   launchctl bootout "gui/$UID_N/$L" 2>/dev/null || true
-  launchctl bootstrap "gui/$UID_N" "$LA/$L.plist"
+  # bootout is asynchronous; bootstrapping before it finishes fails with "5: Input/output error".
+  for _ in $(seq 1 20); do launchctl print "gui/$UID_N/$L" >/dev/null 2>&1 || break; sleep 0.5; done
+  launchctl bootstrap "gui/$UID_N" "$LA/$L.plist" || { sleep 2; launchctl bootstrap "gui/$UID_N" "$LA/$L.plist"; }
 done
 sleep 3
 for L in $DAEMON $HOTKEY; do

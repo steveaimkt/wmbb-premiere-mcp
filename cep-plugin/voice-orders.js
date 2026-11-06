@@ -72,10 +72,18 @@
     sse = req;
   }
 
+  // While the user is typing (caption edit, time, glossary — Korean IME composition included),
+  // a background refresh must not rebuild the rows and wipe the input.
+  function busyTyping() {
+    var a = document.activeElement;
+    return !!(state.editing || state.glossaryFor || (a && a.tagName === 'INPUT' && a.type !== 'checkbox' && $('rows').contains(a)));
+  }
+
   function refresh() {
     return api('GET', '/orders').then(function (j) {
       state.orders = j.orders || [];
       setStatus(j.status || {});
+      if (busyTyping()) { state.stale = true; return; }
       render();
     }).catch(function () { setDown(true); });
   }
@@ -161,6 +169,7 @@
   }
 
   function render() {
+    state.stale = false;
     var rows = state.orders;
     $('empty').style.display = rows.length ? 'none' : 'block';
     var html = rows.map(function (o) {
@@ -274,6 +283,10 @@
       $('panelRec').textContent = start ? '■ 녹음 끝내기' : '● 패널에서 녹음';
       setStatus(state.status);
     }, function (e) { fail(e.message.indexOf('helper') >= 0 ? new Error('단축키 앱(VoiceHotkey)이 꺼져 있습니다') : e); });
+  });
+
+  $('rows').addEventListener('focusout', function () {
+    setTimeout(function () { if (state.stale && !busyTyping()) { state.stale = false; render(); } }, 0);
   });
 
   connect();
