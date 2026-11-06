@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>AI 음성 지시</title>
+<style>
+  :root {
+    --bg: #1d1d1f; --panel: #232325; --line: #2f2f33; --text: #e8e8ea; --dim: #8b8b92;
+    --blue: #2d8cff; --row-sel: #1f3a5a; --red: #ff4d4f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.45 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px;
+    border-bottom: 1px solid var(--line); font-weight: 600; }
+  header .meta { color: var(--dim); font-weight: 400; font-size: 12px; }
+  .bar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px;
+    background: #2a2a2e; color: var(--dim); font-weight: 600; white-space: nowrap; }
+  .pill .dot { width: 9px; height: 9px; border-radius: 50%; background: #55555c; }
+  .pill.rec { background: #3a1a1c; color: #ff8a8c; }
+  .pill.rec .dot { background: var(--red); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  .hint { color: var(--dim); font-size: 12px; flex: 1; }
+  .warn { color: #ffb84d; font-size: 12px; }
+  button { font: inherit; color: var(--text); background: #2c2c30; border: 1px solid #3a3a40; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #36363b; }
+  button.primary { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 700; padding: 6px 16px; }
+  button.primary:disabled { opacity: .45; cursor: default; }
+  button.link { background: none; border: none; color: var(--dim); padding: 2px 6px; }
+  button.link:hover { color: var(--text); }
+  main { flex: 1; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--dim); font-weight: 500; font-size: 12px; padding: 6px 8px;
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr.row { cursor: pointer; }
+  tr.row:hover { background: #26262a; }
+  tr.row.sel { background: var(--row-sel); }
+  tr.row.off td:not(.chk) { opacity: .45; }
+  td.chk { width: 30px; text-align: center; }
+  td.chk input { width: 15px; height: 15px; accent-color: var(--blue); }
+  td.pos { width: 62px; color: #6db3ff; font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+  td.said { width: 36%; color: #c9c9ce; }
+  td.acts { width: 210px; text-align: right; white-space: nowrap; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; margin-right: 6px; }
+  .b-narration { background: #1d3557; color: #8fc2ff; }
+  .b-situation { background: #4a3a12; color: #ffcf5c; }
+  .b-reaction { background: #4a1d34; color: #ff8cc6; }
+  .b-item { background: #17402a; color: #7ee2a4; }
+  .b-zoom { background: #2f2552; color: #b9a6ff; }
+  .b-fail { background: #4a1a1a; color: #ff8080; }
+  .b-wait { background: #2c2c30; color: var(--dim); }
+  .b-done { background: #17402a; color: #7ee2a4; }
+  .sub { color: var(--dim); font-size: 12px; }
+  .edit { display: flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+  .edit input[type=text], .edit input[type=number], .edit select { font: inherit; color: var(--text); background: #151517;
+    border: 1px solid #3a3a40; border-radius: 5px; padding: 3px 6px; }
+  .edit input.wide { flex: 1; min-width: 200px; }
+  footer { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-top: 1px solid var(--line); }
+  footer .count { flex: 1; color: var(--dim); }
+  footer .count b { color: var(--text); }
+  .empty { color: var(--dim); text-align: center; padding: 30px; }
+  #down { position: fixed; inset: 0; background: rgba(20,20,22,.96); display: none; align-items: center;
+    justify-content: center; flex-direction: column; gap: 8px; text-align: center; padding: 20px; }
+  #down code { background: #2c2c30; padding: 2px 6px; border-radius: 4px; }
+  #toast { position: fixed; right: 14px; bottom: 54px; background: #2c2c30; border: 1px solid #3a3a40; border-radius: 8px;
+    padding: 8px 12px; display: none; max-width: 60%; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <header>
+    <span>AI 음성 지시</span>
+    <span class="meta" id="meta"></span>
+  </header>
+  <div class="bar">
+    <span class="pill" id="rec"><span class="dot"></span><span id="recText">대기</span></span>
+    <span class="hint">오른쪽 Option(⌥)을 누르고 있는 동안 녹음 · 떼면 그 자리에 마커가 찍힘</span>
+    <span class="warn" id="warn"></span>
+    <button id="panelRec">● 패널에서 녹음</button>
+  </div>
+  <main>
+    <table>
+      <thead><tr><th></th><th>위치</th><th>내가 한 말</th><th>Claude가 이해한 것</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty">아직 지시가 없습니다. 재생헤드를 옮기고 오른쪽 Option을 누른 채 말해 보세요.</div>
+  </main>
+  <footer>
+    <span class="count" id="count"></span>
+    <span class="sub">적용 전 시퀀스 자동 백업</span>
+    <button class="primary" id="apply" disabled>적용</button>
+  </footer>
+  <div id="down">
+    <div style="font-size:15px;font-weight:700">음성 지시 데몬이 꺼져 있음</div>
+    <div class="sub">보통 로그인하면 자동으로 켜집니다. 안 켜지면 터미널에서 <code>npm run voice-orders:install</code> 을 다시 실행하세요. 켜지면 자동으로 다시 연결됩니다.</div>
+  </div>
+  <div id="toast"></div>
+  <script src="./CSInterface.js"></script>
+  <script src="./voice-orders.js"></script>
+</body>
+</html>

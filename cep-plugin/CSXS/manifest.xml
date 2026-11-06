@@ -2,6 +2,7 @@
 <ExtensionManifest Version="10.0" ExtensionBundleId="com.mcp.premiere.cepbridge" ExtensionBundleVersion="1.0.0" ExtensionBundleName="MCP Bridge (CEP)">
   <ExtensionList>
     <Extension Id="com.mcp.premiere.cepbridge.panel" Version="1.0.0"/>
+    <Extension Id="com.mcp.premiere.cepbridge.voiceorders" Version="1.0.0"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -42,6 +43,39 @@
             <MaxSize>
               <Height>2000</Height>
               <Width>2000</Width>
+            </MaxSize>
+          </Geometry>
+          <Icons/>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+    <Extension Id="com.mcp.premiere.cepbridge.voiceorders">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./voice-orders.html</MainPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>AI 음성 지시</Menu>
+          <Geometry>
+            <Size>
+              <Height>260</Height>
+              <Width>900</Width>
+            </Size>
+            <MinSize>
+              <Height>160</Height>
+              <Width>520</Width>
+            </MinSize>
+            <MaxSize>
+              <Height>2000</Height>
+              <Width>3000</Width>
             </MaxSize>
           </Geometry>
           <Icons/>
