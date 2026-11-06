@@ -13,7 +13,7 @@ rl.on('line', (line) => {
   const reply = (text, delay) => setTimeout(() => process.stdout.write(JSON.stringify({ id: req.id, ok: true, text }) + '\\n'), delay);
   if (req.wav === 'slow') reply('느림', 200);
   else if (req.wav === 'fast') reply('빠름', 10);
-  else if (req.wav === 'hang') {}
+  else if (req.wav === 'hang') { for (;;) {} }
   else if (req.wav === 'die') process.exit(1);
   else if (req.wav === 'fail') process.stdout.write(JSON.stringify({ id: req.id, ok: false, text: '', error: 'boom' }) + '\\n');
   else if (req.wav === 'prompt') reply(req.prompt, 0);
@@ -76,6 +76,32 @@ describe('SttWorker', () => {
     expect(r1.ok).toBe(false);
     const r2 = await w.transcribe('살아남');
     expect(r2).toEqual({ ok: true, text: '살아남' });
+  });
+
+  test('a hung request kills the worker so the next request gets a fresh one', async () => {
+    w = make(300);
+    expect((await w.transcribe('hang')).ok).toBe(false);
+    expect(await w.transcribe('다음')).toEqual({ ok: true, text: '다음' });
+  });
+
+  test('a start that never becomes ready is retried on the next call', async () => {
+    const slow = join(dir, 'slow-start.cjs');
+    const flag = join(dir, 'started-once');
+    writeFileSync(slow, `
+      const fs = require('fs');
+      const first = !fs.existsSync(${JSON.stringify(flag)});
+      fs.writeFileSync(${JSON.stringify(flag)}, '1');
+      if (first) { setInterval(() => {}, 1000); }
+      else {
+        process.stdout.write(JSON.stringify({ ready: true }) + '\\n');
+        require('readline').createInterface({ input: process.stdin }).on('line', (l) => {
+          const r = JSON.parse(l); process.stdout.write(JSON.stringify({ id: r.id, ok: true, text: 'ok' }) + '\\n');
+        });
+      }`);
+    w = new SttWorker({ pythonBin: process.execPath, scriptPath: slow, glossary, timeoutMs: 1000, startTimeoutMs: 300 });
+    const first = await w.transcribe('x');
+    expect(first.ok).toBe(false);
+    expect(await w.transcribe('x')).toEqual({ ok: true, text: 'ok' });
   });
 
   test('whitespace-only text becomes empty string', async () => {

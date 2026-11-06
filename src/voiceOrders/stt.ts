@@ -33,7 +33,10 @@ export class SttWorker {
     proc.stdin.on('error', () => { /* EPIPE when the worker died; exit handler reports it */ });
 
     this.ready = new Promise<void>((resolve, reject) => {
-      const startTimer = setTimeout(() => reject(new Error('stt worker did not become ready')), this.opts.startTimeoutMs ?? 120_000);
+      const startTimer = setTimeout(() => {
+        reject(new Error('stt worker did not become ready'));
+        this.discard(proc, 'stt worker did not become ready');
+      }, this.opts.startTimeoutMs ?? 120_000);
       const rl = createInterface({ input: proc.stdout });
       rl.on('line', (line) => {
         let msg: any;
@@ -75,11 +78,23 @@ export class SttWorker {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         resolve({ ok: false, error: `stt timed out after ${this.timeoutMs}ms` });
+        // The worker decodes one request at a time; a hung decode blocks every later one.
+        this.discard(proc, `stt worker restarted after a ${this.timeoutMs}ms timeout`);
       }, this.timeoutMs);
       this.pending.set(id, { resolve, timer });
       const prompt = this.opts.glossary.promptTerms().join(', ');
       proc.stdin.write(JSON.stringify({ id, wav: wavPath, prompt }) + '\n');
     });
+  }
+
+  /** Drop a stuck worker now so the next call starts a fresh one. */
+  private discard(proc: ChildProcessWithoutNullStreams, why: string): void {
+    if (this.proc !== proc) return;
+    this.proc = null;
+    this.ready = null;
+    for (const [, x] of this.pending) { clearTimeout(x.timer); x.resolve({ ok: false, error: why }); }
+    this.pending.clear();
+    proc.kill('SIGKILL');
   }
 
   stop(): void {
