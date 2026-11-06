@@ -52,6 +52,10 @@ describe('Interpreter', () => {
     expect(s).toContain('쿡쿡');
   });
 
+  test('the style guide turns a drawn-out interjection into "..." (오... 드디어 뭔가 뜨나?)', () => {
+    expect(buildSystemPrompt('')).toContain('오... 드디어 뭔가 뜨나?');
+  });
+
   test('one valid caption -> ready', async () => {
     const order = { kind: 'caption', style: 'situation', text: '(누군가가 밖에서 빠르게 달려오는 중)', placement: 'playhead' };
     const it = new Interpreter({ client: fakeClient({ orders: [order] }), model: 'claude-haiku-5-5', glossary: await glossary() });

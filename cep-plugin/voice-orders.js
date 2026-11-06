@@ -169,7 +169,10 @@
       if (o.status === 'failed' || o.status === 'no_speech') acts += '<button class="link" data-act="retry">↻ 다시 처리</button>';
       else if (o.status !== 'processing' && o.status !== 'applied') {
         acts += '<button class="link" data-act="edit">✎ 고치기</button>';
-        if (o.payload && o.payload.kind === 'caption') acts += '<button class="link" data-act="repolish">↻ 다시 다듬기</button>';
+        if (o.payload && o.payload.kind === 'caption') {
+          acts += '<button class="link" data-act="paren" title="자막을 괄호로 감싸기/풀기">( ) 괄호</button>';
+          acts += '<button class="link" data-act="repolish" title="같은 말을 Claude에게 다시 다듬게 함 (새로 녹음하지 않음)">↻ 다시 다듬기</button>';
+        }
       }
       if (o.status !== 'processing') acts += '<button class="link" data-act="del" title="삭제">🗑</button>';
       var extra = '';
@@ -231,7 +234,17 @@
         break;
       }
       case 'gcancel': state.glossaryFor = null; render(); break;
-      case 'repolish': api('POST', '/orders/' + enc + '/repolish').then(done, fail); break;
+      case 'paren': {
+        // 누르는 즉시 괄호를 씌우거나 벗긴다. 괄호 자막은 '상황', 벗기면 '내레이션'.
+        var cur = String(o.payload.text || '').trim();
+        var wrapped = /^\(.*\)$/.test(cur);
+        var next = wrapped ? cur.slice(1, -1).trim() : '(' + cur + ')';
+        var p2 = { kind: 'caption', style: wrapped ? 'narration' : 'situation', text: next, placement: o.payload.placement || 'playhead' };
+        o.payload = p2; render(); // 화면에 바로 반영
+        api('PATCH', '/orders/' + enc, { payload: p2 }).then(done, function (e) { fail(e); refresh(); });
+        break;
+      }
+      case 'repolish': toast('같은 말을 Claude에게 다시 다듬게 합니다 (새로 녹음하지 않음)'); api('POST', '/orders/' + enc + '/repolish').then(done, fail); break;
       case 'retry': api('POST', '/orders/' + enc + '/retry').then(done, fail); break;
       case 'del': api('DELETE', '/orders/' + enc).then(done, fail); break;
       case 'settime': {
