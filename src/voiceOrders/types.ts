@@ -52,7 +52,7 @@ export const DEFAULT_SETTINGS: Settings = {
   model: 'claude-haiku-5-5',
   captionTemplatePath: '',
   captionTrackName: 'AI 자막',
-  hotkeyKeyCode: 105,
+  hotkeyKeyCode: 61, // 오른쪽 Option (맥북에 F13 없음). F13 = 105
   markerMode: 'immediate',
   zoomDefaults: { scale: 120, holdSec: 2, anchor: 'center' },
 };

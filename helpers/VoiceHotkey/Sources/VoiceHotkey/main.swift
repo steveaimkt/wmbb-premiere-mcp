@@ -2,7 +2,8 @@ import AppKit
 import AVFoundation
 import ApplicationServices
 
-/// Menu-bar helper: hold the hotkey (default F13) → record → hand the WAV to the daemon.
+/// Menu-bar helper: hold the hotkey (default right Option) → record → hand the WAV to the daemon.
+/// Modifier keys (Option/Command/Control/Shift/fn) arrive as .flagsChanged, not keyDown/keyUp.
 /// ○ idle  ● recording  ⚠ daemon unreachable / permission missing
 final class App: NSObject, NSApplicationDelegate {
     private let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -23,8 +24,8 @@ final class App: NSObject, NSApplicationDelegate {
         let trusted = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
         if !trusted { fail("손쉬운 사용 권한을 허용한 뒤 다시 실행하세요") }
         let handler: (NSEvent) -> Void = { [weak self] e in self?.onKey(e) }
-        if let m = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp], handler: handler) { monitors.append(m) }
-        if let m = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp], handler: { e in handler(e); return e }) { monitors.append(m) }
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged], handler: handler) { monitors.append(m) }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged], handler: { e in handler(e); return e }) { monitors.append(m) }
         do {
             server = try HelperServer(onStart: { [weak self] in self?.begin() }, onStop: { [weak self] in self?.end() })
             server?.start()
@@ -33,7 +34,25 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func onKey(_ e: NSEvent) {
         guard e.keyCode == keyCode else { return }
-        if e.type == .keyDown { if !e.isARepeat { begin() } } else if e.type == .keyUp { end() }
+        switch e.type {
+        case .keyDown: if !e.isARepeat { begin() }
+        case .keyUp: end()
+        case .flagsChanged:
+            guard let flag = Self.modifierFlag(for: keyCode) else { return }
+            if e.modifierFlags.contains(flag) { begin() } else { end() }
+        default: break
+        }
+    }
+
+    private static func modifierFlag(for code: UInt16) -> NSEvent.ModifierFlags? {
+        switch code {
+        case 58, 61: return .option
+        case 54, 55: return .command
+        case 59, 62: return .control
+        case 56, 60: return .shift
+        case 63: return .function
+        default: return nil
+        }
     }
 
     private func begin() {

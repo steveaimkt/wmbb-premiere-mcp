@@ -20,11 +20,11 @@ enum Paths {
         return t.isEmpty ? nil : t
     }
 
-    /// settings.json "hotkeyKeyCode" (default 105 = F13).
+    /// settings.json "hotkeyKeyCode" (default 61 = right Option; F13 = 105).
     static func hotkeyKeyCode() -> UInt16 {
         guard let d = try? Data(contentsOf: settings),
               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-              let k = j["hotkeyKeyCode"] as? NSNumber else { return 105 }
+              let k = j["hotkeyKeyCode"] as? NSNumber else { return 61 }
         return k.uint16Value
     }
 }
