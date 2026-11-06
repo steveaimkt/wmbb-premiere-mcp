@@ -28,7 +28,7 @@ export class Glossary {
     const terms = this.promptTerms();
     if (terms.length === 0) return '(용어 사전 비어 있음)';
     return terms.map((t) => {
-      const heard = this.entries[t];
+      const heard = this.entries[t] ?? [];
       return heard.length ? `- ${t} (들리는 말: ${heard.join(', ')})` : `- ${t}`;
     }).join('\n');
   }
