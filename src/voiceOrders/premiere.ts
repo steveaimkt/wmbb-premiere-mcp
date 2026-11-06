@@ -5,7 +5,7 @@
  */
 import type { PremiereProTransport } from '../bridge/types.js';
 import type { PremiereProTools } from '../tools/index.js';
-import type { PlacedCaption, ZoomKey } from './timing.js';
+import { rebaseZoom, type PlacedCaption, type ZoomKey } from './timing.js';
 import type { Settings, VoiceOrder } from './types.js';
 
 export interface PremierePort {
@@ -111,6 +111,24 @@ export class BridgePremierePort implements PremierePort {
     const v1 = (tracks?.videoTracks ?? [])[0];
     const clip = (v1?.clips ?? []).find((c: any) => c.startTime <= atSec && atSec < c.endTime);
     if (!clip) return { ok: false, error: `V1에 ${atSec.toFixed(2)}초를 덮는 클립이 없음` };
+    // Key relative to the clip's own framing at that moment (a 1440p clip fitted at 66.7%, a reframed
+    // position, an earlier zoom) — otherwise the rest keys would force 100%/centre over the whole clip.
+    const base = parse(await this.bridge.executeScript(`
+      var hit = __findClipInSequence(__findSequence(${JSON.stringify(seqId)}), ${JSON.stringify(String(clip.id))});
+      if (!hit) return JSON.stringify({ success: false, error: "clip not found" });
+      var c = hit.clip, motion = null;
+      for (var i = 0; i < c.components.numItems; i++) if (c.components[i].matchName === "AE.ADBE Motion") motion = c.components[i];
+      if (!motion) return JSON.stringify({ success: false, error: "no Motion effect" });
+      var t = new Time(); t.seconds = c.inPoint.seconds + (${JSON.stringify(atSec)} - c.start.seconds);
+      var pos = motion.properties[0], sc = motion.properties[1];
+      function at(p) { return p.isTimeVarying() ? p.getValueAtTime(t) : p.getValue(); }
+      var pv = at(pos), sv = at(sc);
+      return JSON.stringify({ success: true, scale: Number(sv), position: [Number(pv[0]), Number(pv[1])] });
+    `).catch((e: any) => JSON.stringify({ success: false, error: String(e?.message ?? e) })));
+    if (!base?.success || !Number.isFinite(base.scale) || !Array.isArray(base.position)) {
+      return { ok: false, error: `클립 모션(크기·위치)을 읽지 못해 확대하지 않음: ${base?.error ?? 'unknown'}` };
+    }
+    keys = rebaseZoom(keys, { scale: base.scale, position: [base.position[0], base.position[1]] });
     // A zoom that would run past the clip's end is pulled back so it eases out inside the clip
     // (set_clip_motion rejects keys outside the clip). Too short for both ramps → refuse.
     const end = Number(clip.endTime) - 1 / 60;

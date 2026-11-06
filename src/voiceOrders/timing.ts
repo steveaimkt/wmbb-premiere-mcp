@@ -84,3 +84,23 @@ export function zoomKeyframes(startSec: number, scale: number, holdSec: number, 
     { time: t2 + ZOOM_RAMP_SEC, scale: 100, position: rest },
   ];
 }
+
+/**
+ * Re-express zoom keys (built for a clip at 100%, centred) relative to the clip's own framing:
+ * rest keys take the clip's scale/position, peak keys scale it by the same factor about the same
+ * frame anchor. Otherwise the first/last keys would hold 100%/centre over the whole clip.
+ */
+export function rebaseZoom(keys: ZoomKey[], base: { scale: number; position: [number, number] }): ZoomKey[] {
+  return keys.map((k) => {
+    const f = k.scale / 100;
+    if (Math.abs(f - 1) < 1e-9) return { time: k.time, scale: base.scale, position: [base.position[0], base.position[1]] as [number, number] };
+    // k.position = A + (0.5 - A) * f  →  anchor A per axis
+    const anchor = (p: number) => (p - 0.5 * f) / (1 - f);
+    const ax = anchor(k.position[0]), ay = anchor(k.position[1]);
+    return {
+      time: k.time,
+      scale: base.scale * f,
+      position: [ax + (base.position[0] - ax) * f, ay + (base.position[1] - ay) * f] as [number, number],
+    };
+  });
+}

@@ -118,3 +118,24 @@ describe('zoomKeyframes', () => {
     expect(k[1]!.position[1]).toBeCloseTo(0.5667, 4);
   });
 });
+
+describe('rebaseZoom (zoom relative to the clip\'s own scale/position)', () => {
+  const { rebaseZoom } = require('../../voiceOrders/timing.js');
+  test('identity when the clip is at 100% and centred', () => {
+    const k = zoomKeyframes(10, 120, 2, 'bottom_right');
+    expect(rebaseZoom(k, { scale: 100, position: [0.5, 0.5] })).toEqual(k);
+  });
+  test('a clip fitted at 66.7% rests at 66.7% and peaks at 66.7×1.2', () => {
+    const r = rebaseZoom(zoomKeyframes(10, 120, 2, 'center'), { scale: 66.7, position: [0.5, 0.5] });
+    expect(r.map((x: any) => +x.scale.toFixed(2))).toEqual([66.7, 80.04, 80.04, 66.7]);
+    expect(r[0].position).toEqual([0.5, 0.5]);
+  });
+  test('a reframed clip keeps its position at rest; the anchor point stays fixed at the peak', () => {
+    const r = rebaseZoom(zoomKeyframes(10, 150, 2, 'top_left'), { scale: 100, position: [0.6, 0.4] });
+    expect(r[0].position).toEqual([0.6, 0.4]);
+    expect(r[3].position).toEqual([0.6, 0.4]);
+    // anchor (1/6,1/6) fixed: p' = A + (p0 - A) * 1.5
+    expect(r[1].position[0]).toBeCloseTo(1 / 6 + (0.6 - 1 / 6) * 1.5, 6);
+    expect(r[1].position[1]).toBeCloseTo(1 / 6 + (0.4 - 1 / 6) * 1.5, 6);
+  });
+});

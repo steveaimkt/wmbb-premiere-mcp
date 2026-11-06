@@ -9,7 +9,7 @@ function fakeTools(responses: Record<string, any>) {
     tools: { executeTool: async (name: string, args: any) => { calls.push({ name, args }); return JSON.stringify(responses[name] ?? { success: true }); } } as any,
   };
 }
-const bridge = { executeScript: async () => '{}' } as any;
+const bridge = { executeScript: async () => JSON.stringify({ success: true, scale: 100, position: [0.5, 0.5] }) } as any;
 const settings = () => ({ ...DEFAULT_SETTINGS, captionTemplatePath: '/t.mogrt' });
 
 describe('BridgePremierePort', () => {
@@ -64,5 +64,23 @@ describe('BridgePremierePort', () => {
     const p = new BridgePremierePort(bridge, f.tools, settings);
     const r = await p.placeCaption('seqA', { orderId: 'o1', startSec: 1, endSec: 2, text: 'x' });
     expect(r).toEqual({ ok: false, error: 'text reads ""' });
+  });
+});
+
+describe('BridgePremierePort.zoom keeps the clip framing', () => {
+  test('reads the clip scale at the zoom time and keys relative to it', async () => {
+    const f = fakeTools({ list_sequence_tracks: { success: true, videoTracks: [{ name: 'V1', clips: [{ id: 'c1', startTime: 0, endTime: 60 }] }] } });
+    const b = { executeScript: async () => JSON.stringify({ success: true, scale: 66.7, position: [0.5, 0.5] }) } as any;
+    const p = new BridgePremierePort(b, f.tools, settings);
+    expect((await p.zoom('seqA', 12, zoomKeyframes(12, 120, 2, 'center'))).ok).toBe(true);
+    expect(f.calls[1].args.keyframes.map((k: any) => +k.scale.toFixed(2))).toEqual([66.7, 80.04, 80.04, 66.7]);
+  });
+  test('refuses when the clip motion cannot be read (would reframe the whole clip)', async () => {
+    const f = fakeTools({ list_sequence_tracks: { success: true, videoTracks: [{ name: 'V1', clips: [{ id: 'c1', startTime: 0, endTime: 60 }] }] } });
+    const b = { executeScript: async () => JSON.stringify({ success: false, error: 'no motion' }) } as any;
+    const p = new BridgePremierePort(b, f.tools, settings);
+    const r = await p.zoom('seqA', 12, zoomKeyframes(12, 120, 2, 'center'));
+    expect(r.ok).toBe(false);
+    expect(f.calls).toHaveLength(1);
   });
 });
