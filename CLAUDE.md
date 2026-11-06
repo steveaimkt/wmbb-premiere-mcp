@@ -35,6 +35,7 @@
 **변경 이력:**
 | 날짜 | 변경 내용 | 대상 | 사유 |
 |------|----------|------|------|
+| 2026-11-07 | **음성 지시 완성** — 단축키 앱(오른쪽 Option)·검토 패널(AI 음성 지시)·설치(launchd)·키체인 API 키 | `helpers/VoiceHotkey`, `cep-plugin/voice-orders.*`, `scripts/install-voice-orders.sh`, `src/voiceOrders/apiKey.ts` | 실사용: 말하기→마커(주황)→패널 검토→적용→자막·초록 마커까지 26.5.2에서 확인. 받은 피드백 반영: 맥북엔 F13 없음→오른쪽 Option, "키윽 키윽"→ㅋㅋ(자모 이름 정규화), 길게 끈 감탄사→"오...", 괄호 버튼, 자막 글꼴 210 옴니고딕 020 |
 | 2026-11-07 | **`get_playhead`·`set_marker`·`place_mogrt_text` 신규** (재조회 `verify` 계약) | `tools/index.ts`, `scripts/voice-orders-live-test.mjs` | 음성 지시가 재생헤드 읽기·마커 생성/이동·AE 자막 배치를 해야 함. 실측으로 잡은 것: `marker.start`는 **초(number)만** 받음(Time 객체는 Illegal Parameter type, `start.seconds =`는 조용히 무시) / V1 클립 끝을 넘는 확대는 `set_clip_motion`이 거부 → 클립 안에서 끝나도록 당김. 라이브 스크립트 ALL CHECKS PASSED |
 | 2026-11-07 | 음성 지시용 26.5.2 실측 | (기록), `voiceOrders/premiere.ts` | ① **프리미어에서 만든 .mogrt**(1말하는자막)는 `importMGT`로 놓이지만 MGT 컴포넌트가 없고 소스 텍스트가 바이너리라 문구 변경 불가, **AE .mogrt**는 `textEditValue` setValue 후 재조회로 확인 ② 재생 중 `createMarker`는 재생을 멈추지 않음 ③ `videoTrack.name =` 으로 트랙 이름 변경됨 ④ 마커 색 인덱스 0 초록·1 빨강·2 보라·3 주황·4 노랑·5 흰색·6 파랑·7 청록(회색 없음 → 체크 해제 마커를 7에서 5로 수정) ⑤ `Sequence.clone()`은 활성 시퀀스를 바꿈 |
 | 2026-11-04 | **`import_files`·`rename_item`·`add_caption_track`·`set_clip_motion`·`set_track_mute` 신규** (모두 재조회 `verify` 계약) | `tools/index.ts`, `utils/prprojCaptions.ts` | 파일 가져오기·이름 바꾸기·캡션 배치·확대 키프레임·음소거가 없어 사용자가 직접 클릭하거나 XML로 우회했고, 화면 제어로 대신하다 키 입력이 타임라인에 들어간 사고까지 있었다. 26.5.2 정식판 테스트 복사 시퀀스에서 실측 |
