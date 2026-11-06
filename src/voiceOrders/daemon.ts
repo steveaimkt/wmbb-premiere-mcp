@@ -111,6 +111,7 @@ export class VoiceOrdersDaemon {
     const key = this.pending.get(pendingId);
     if (!key) throw new HttpError(404, `unknown pendingId: ${pendingId}`);
     this.pending.delete(pendingId);
+    this.emit('status', this.status());
     if (!(durationSec >= MIN_RECORDING_SEC)) return;
 
     const store = await this.deps.storeFor(key.projectPath ?? this.lastProject ?? UNKNOWN_PROJECT);
@@ -302,7 +303,7 @@ export class VoiceOrdersDaemon {
   // ---------- status & events ----------
 
   status() {
-    return { bridge: this.bridgeUp, stt: this.sttUp, model: this.deps.settings.model };
+    return { bridge: this.bridgeUp, stt: this.sttUp, model: this.deps.settings.model, recording: this.pending.size > 0 };
   }
 
   private emit(event: string, data: unknown): void {

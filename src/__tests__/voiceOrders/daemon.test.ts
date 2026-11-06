@@ -80,6 +80,15 @@ describe('VoiceOrdersDaemon pipeline', () => {
     expect(o!.markerId).toBe('m1');
   });
 
+  test('status.recording is true between key-down and key-up (panel shows 녹음 중)', async () => {
+    const { d } = setup();
+    expect(d.status().recording).toBe(false);
+    const id = await d.onKeyDown();
+    expect(d.status().recording).toBe(true);
+    await d.onKeyUp(id, '/rec/a.wav', 1);
+    expect(d.status().recording).toBe(false);
+  });
+
   test('playhead uses key-down time even if the playhead moved before key-up', async () => {
     const { d, premiere } = setup();
     const id = await d.onKeyDown();
