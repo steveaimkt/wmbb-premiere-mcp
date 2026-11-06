@@ -1446,6 +1446,7 @@ export class PremiereProTools {
     if (!(endSec > startSec)) return JSON.stringify({ success: false, error: 'endSec must be greater than startSec' });
     const TPS = 254016000000;
     const result = await this.runScript(`
+      var placed = null;
       try {
         var seq = ${this.seqExpr(sequenceId)};
         if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
@@ -1462,9 +1463,16 @@ export class PremiereProTools {
           if (seq.videoTracks.numTracks !== n0 + 1) return JSON.stringify({ success: false, error: "could not add a video track for " + trackName });
           trk = n0; seq.videoTracks[trk].name = trackName; addedTrack = true;
         }
-        var track = seq.videoTracks[trk], before = {};
-        for (var i = 0; i < track.clips.numItems; i++) before[track.clips[i].nodeId] = 1;
+        var track = seq.videoTracks[trk], before = {}, neighbors = [];
         var startSec = ${JSON.stringify(startSec)}, endSec = ${JSON.stringify(endSec)};
+        for (var i = 0; i < track.clips.numItems; i++) {
+          var nb = track.clips[i];
+          before[nb.nodeId] = 1;
+          neighbors.push({ id: nb.nodeId, start: nb.start.seconds, end: nb.end.seconds });
+          // importMGT overwrites whatever it lands on (26.5.2 실측) — never import over an existing clip.
+          if (nb.start.seconds < endSec - 0.01 && nb.end.seconds > startSec + 0.01)
+            return JSON.stringify({ success: false, error: "overlaps existing clip '" + nb.name + "' (" + nb.start.seconds + "-" + nb.end.seconds + "s)" });
+        }
         seq.importMGT(f.fsName, String(Math.round(startSec * ${TPS})), trk, 0);
         var clip = null;
         for (var j = 0; j < track.clips.numItems; j++) {
@@ -1472,6 +1480,7 @@ export class PremiereProTools {
           if (!before[c.nodeId] && Math.abs(c.start.seconds - startSec) < 0.05) clip = c;
         }
         if (!clip) return JSON.stringify({ success: false, error: "placed graphic not found on re-read" });
+        placed = clip;
         var mgt = clip.getMGTComponent ? clip.getMGTComponent() : null, prop = null;
         if (mgt) for (var p = 0; p < mgt.properties.numItems; p++) {
           var val = ""; try { val = String(mgt.properties[p].getValue()); } catch (e1) {}
@@ -1483,8 +1492,12 @@ export class PremiereProTools {
         prop.setValue(JSON.stringify(doc), 1);
         var e = new Time(); e.seconds = endSec; clip.end = e;
         clip.name = ${JSON.stringify(clipName ?? text)};
-        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, clipId: clip.nodeId, trackIndex: trk, addedTrack: addedTrack });
-      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, clipId: clip.nodeId, trackIndex: trk, addedTrack: addedTrack, neighbors: neighbors });
+      } catch (e) {
+        // Don't leave a half-configured placeholder graphic behind.
+        if (placed) { try { placed.remove(false, false); } catch (e2) {} }
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
     `);
     if (!result || result.success === false) return JSON.stringify(result);
     const reread = await this.runScript(`
@@ -1496,7 +1509,9 @@ export class PremiereProTools {
           var val = ""; try { val = String(mgt.properties[p].getValue()); } catch (e1) {}
           if (val.indexOf("textEditValue") >= 0) { txt = JSON.parse(val).textEditValue; break; }
         }
-        return JSON.stringify({ success: true, found: true, startSec: clip.start.seconds, endSec: clip.end.seconds, text: txt, name: clip.name, trackIndex: hit.trackIndex });
+        var nbs = [], tr = hit.track;
+        for (var n = 0; n < tr.clips.numItems; n++) { var nc = tr.clips[n]; if (nc.nodeId !== clip.nodeId) nbs.push({ id: nc.nodeId, start: nc.start.seconds, end: nc.end.seconds }); }
+        return JSON.stringify({ success: true, found: true, startSec: clip.start.seconds, endSec: clip.end.seconds, text: txt, name: clip.name, trackIndex: hit.trackIndex, neighbors: nbs });
       } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
     `);
     const problems: string[] = [];
@@ -1505,6 +1520,15 @@ export class PremiereProTools {
       if (Math.abs(reread.startSec - startSec) > 0.05) problems.push(`start reads ${reread.startSec}, wanted ${startSec}`);
       if (Math.abs(reread.endSec - endSec) > 0.05) problems.push(`end reads ${reread.endSec}, wanted ${endSec}`);
       if (reread.text !== text) problems.push(`text reads ${JSON.stringify(reread.text)}`);
+      // The other clips on the track must be exactly as they were (importMGT overwrites what it lands on).
+      if (Array.isArray(result.neighbors) && Array.isArray(reread.neighbors)) {
+        const now = new Map<string, any>(reread.neighbors.map((n: any) => [String(n.id), n]));
+        for (const b of result.neighbors) {
+          const a = now.get(String(b.id));
+          if (!a) problems.push(`neighbouring clip ${b.id} (${b.start}-${b.end}s) is gone`);
+          else if (Math.abs(a.start - b.start) > 0.02 || Math.abs(a.end - b.end) > 0.02) problems.push(`neighbouring clip ${b.id} moved ${b.start}-${b.end}s → ${a.start}-${a.end}s`);
+        }
+      }
     }
     return JSON.stringify({
       ...result,

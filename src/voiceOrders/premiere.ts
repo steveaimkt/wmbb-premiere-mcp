@@ -79,6 +79,7 @@ export class BridgePremierePort implements PremierePort {
 
   async existingCaptions(seqId: string) {
     const r = parse(await this.tools.executeTool('list_sequence_tracks', { sequenceId: seqId, includeSourceTimes: false, compact: false }));
+    if (!r?.success) throw new Error(String(r?.error ?? 'list_sequence_tracks failed'));
     const name = this.settings().captionTrackName;
     const track = (r?.videoTracks ?? []).find((t: any) => t?.name === name);
     return (track?.clips ?? []).map((c: any) => ({ startSec: Number(c.startTime), endSec: Number(c.endTime) }));

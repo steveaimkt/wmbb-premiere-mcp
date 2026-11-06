@@ -26,7 +26,8 @@ class FakePremiere implements PremierePort {
     this.markers.push({ orderId: o.id, time: o.timeSec, color, markerId: o.markerId ?? null });
     return o.markerId ?? `m${this.markers.length}`;
   }
-  async existingCaptions() { return this.existing; }
+  existingFails = false;
+  async existingCaptions() { if (this.existingFails) throw new Error('list_sequence_tracks failed'); return this.existing; }
   async backup() { return this.backupOk; }
   async placeCaption(_seq: string, c: { text: string }) {
     if (this.failText.has(c.text)) return { ok: false, error: 'mogrt failed' };
@@ -78,6 +79,16 @@ describe('VoiceOrdersDaemon pipeline', () => {
     expect(o).toMatchObject({ timeSec: 12, sequenceId: 'seqA', status: 'ready', checked: true, transcript: '상자를 열었다' });
     expect(premiere.markers).toEqual([expect.objectContaining({ time: 12, color: 'orange' })]);
     expect(o!.markerId).toBe('m1');
+  });
+
+  test('apply does not place captions blind when existing captions cannot be read', async () => {
+    const { d, premiere } = setup();
+    await record(d);
+    premiere.existingFails = true;
+    const r = await d.apply();
+    expect(r.success).toBe(false);
+    expect(premiere.placed).toEqual([]);
+    expect(r.failed[0]!.error).toMatch(/기존 자막/);
   });
 
   test('status.recording is true between key-down and key-up (panel shows 녹음 중)', async () => {

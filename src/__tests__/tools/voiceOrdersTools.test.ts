@@ -89,6 +89,23 @@ describe('voice-orders tools', () => {
     expect(r.verifyProblems.join(' ')).toMatch(/text|end/);
   });
 
+  test('place_mogrt_text fails when a neighbouring clip on the track was changed or removed (importMGT overwrites)', async () => {
+    const { tools } = setup([
+      { success: true, sequenceId: 's1', clipId: 'c9', trackIndex: 8, neighbors: [{ id: 'n1', start: 3, end: 6 }, { id: 'n2', start: 8, end: 9 }] },
+      { success: true, found: true, startSec: 1, endSec: 2.5, text: '자막', name: '자막', neighbors: [{ id: 'n1', start: 3, end: 6 }] },
+    ]);
+    const r = parse(await tools.executeTool('place_mogrt_text', { templatePath: '/t.mogrt', trackName: 'AI 자막', startSec: 1, endSec: 2.5, text: '자막' }));
+    expect(r.success).toBe(false);
+    expect(r.verifyProblems.join(' ')).toMatch(/n2/);
+  });
+
+  test('place_mogrt_text script refuses to import over an existing clip and cleans up on error', async () => {
+    const { tools, scripts } = setup([{ success: false, error: 'overlaps existing clip' }]);
+    await tools.executeTool('place_mogrt_text', { templatePath: '/t.mogrt', trackName: 'AI 자막', startSec: 1, endSec: 2.5, text: 'x' });
+    expect(scripts[0]).toMatch(/overlaps existing clip/);
+    expect(scripts[0]).toMatch(/placed\.remove\(false, false\)/);
+  });
+
   test('place_mogrt_text passes through a placement failure', async () => {
     const { tools } = setup([{ success: false, error: 'template has no editable text (not an After Effects .mogrt?)' }]);
     const r = parse(await tools.executeTool('place_mogrt_text', { templatePath: '/t.mogrt', trackName: 'AI 자막', startSec: 1, endSec: 2, text: 'x' }));

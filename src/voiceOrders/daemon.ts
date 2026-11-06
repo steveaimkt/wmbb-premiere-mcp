@@ -283,9 +283,15 @@ export class VoiceOrdersDaemon {
     };
 
     try {
-      const existing = await this.deps.premiere.existingCaptions(seq.id).catch(() => []);
+      // Laying captions out blind would collide with what is already on the track — fail them instead.
+      let existing: { startSec: number; endSec: number }[] | null = null;
+      let existingError = '';
+      try { existing = await this.deps.premiere.existingCaptions(seq.id); } catch (e: any) { existingError = String(e?.message ?? e); }
       const byId = new Map(targets.map((o) => [o.id, o]));
-      for (const c of layoutCaptions(targets, existing)) {
+      if (existing === null) {
+        for (const o of targets) if (o.payload?.kind === 'caption') await mark(o, { ok: false, error: `기존 자막을 읽지 못해 넣지 않음: ${existingError}` });
+      }
+      for (const c of existing === null ? [] : layoutCaptions(targets, existing)) {
         await mark(byId.get(c.orderId)!, await this.deps.premiere.placeCaption(seq.id, c).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
       }
       for (const o of targets) {
