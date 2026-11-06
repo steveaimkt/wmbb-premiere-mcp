@@ -14,8 +14,8 @@ export interface PremierePort {
   setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'gray'): Promise<string | null>;
   existingCaptions(seqId: string): Promise<{ startSec: number; endSec: number }[]>;
   backup(seqId: string): Promise<boolean>;
-  placeCaption(c: PlacedCaption): Promise<{ ok: boolean; error?: string }>;
-  zoom(atSec: number, keys: ZoomKey[]): Promise<{ ok: boolean; error?: string }>;
+  placeCaption(seqId: string, c: PlacedCaption): Promise<{ ok: boolean; error?: string }>;
+  zoom(seqId: string, atSec: number, keys: ZoomKey[]): Promise<{ ok: boolean; error?: string }>;
 }
 
 /** Marker colour indices (Premiere: 0 green … 7). Confirm in Task 1 probes. */
@@ -89,9 +89,10 @@ export class BridgePremierePort implements PremierePort {
     return r?.success === true;
   }
 
-  async placeCaption(c: PlacedCaption) {
+  async placeCaption(seqId: string, c: PlacedCaption) {
     const s = this.settings();
     const r = parse(await this.tools.executeTool('place_mogrt_text', {
+      sequenceId: seqId,
       templatePath: s.captionTemplatePath,
       trackName: s.captionTrackName,
       startSec: c.startSec,
@@ -102,13 +103,15 @@ export class BridgePremierePort implements PremierePort {
     return r?.success ? { ok: true } : { ok: false, error: String(r?.error ?? 'place_mogrt_text failed') };
   }
 
-  async zoom(atSec: number, keys: ZoomKey[]) {
-    const tracks = parse(await this.tools.executeTool('list_sequence_tracks', { includeSourceTimes: false, compact: false }));
+  async zoom(seqId: string, atSec: number, keys: ZoomKey[]) {
+    const tracks = parse(await this.tools.executeTool('list_sequence_tracks', { sequenceId: seqId, includeSourceTimes: false, compact: false }));
+    if (!tracks?.success) return { ok: false, error: String(tracks?.error ?? 'list_sequence_tracks failed') };
     const v1 = (tracks?.videoTracks ?? [])[0];
     const clip = (v1?.clips ?? []).find((c: any) => c.startTime <= atSec && atSec < c.endTime);
     if (!clip) return { ok: false, error: `V1에 ${atSec.toFixed(2)}초를 덮는 클립이 없음` };
     const r = parse(await this.tools.executeTool('set_clip_motion', {
       clipId: String(clip.id),
+      sequenceId: seqId,
       keyframes: keys.map((k) => ({ time: k.time, scale: k.scale, position: k.position })),
       timeBase: 'sequence',
       interpolation: 'bezier',

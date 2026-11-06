@@ -248,13 +248,13 @@ export class VoiceOrdersDaemon {
     const existing = await this.deps.premiere.existingCaptions(seq.id).catch(() => []);
     for (const c of layoutCaptions(targets, existing)) {
       const o = store.get(c.orderId)!;
-      await mark(o, await this.deps.premiere.placeCaption(c).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
+      await mark(o, await this.deps.premiere.placeCaption(seq.id, c).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
     }
     for (const o of targets) {
       if (o.payload?.kind !== 'zoom') continue;
       const z = o.payload;
       const keys = zoomKeyframes(o.timeSec!, z.scale, z.holdSec, z.anchor);
-      await mark(o, await this.deps.premiere.zoom(o.timeSec!, keys).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
+      await mark(o, await this.deps.premiere.zoom(seq.id, o.timeSec!, keys).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
     }
     await this.persist(store);
     return { success: failed.length === 0, applied, failed, backupOk: true };

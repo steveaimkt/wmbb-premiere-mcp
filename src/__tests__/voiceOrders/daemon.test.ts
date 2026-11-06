@@ -28,12 +28,12 @@ class FakePremiere implements PremierePort {
   }
   async existingCaptions() { return this.existing; }
   async backup() { return this.backupOk; }
-  async placeCaption(c: { text: string }) {
+  async placeCaption(_seq: string, c: { text: string }) {
     if (this.failText.has(c.text)) return { ok: false, error: 'mogrt failed' };
     this.placed.push(c.text);
     return { ok: true };
   }
-  async zoom(atSec: number) { this.zooms.push(atSec); return { ok: true }; }
+  async zoom(_seq: string, atSec: number) { this.zooms.push(atSec); return { ok: true }; }
 }
 
 function setup(over: { stt?: string | null; result?: InterpretResult } = {}) {
