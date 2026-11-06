@@ -71,6 +71,8 @@ const STYLE_GUIDE = `너는 한국어 게임 유튜브 영상의 편집 지시�
 - 한 문장에 지시가 둘 이상이면("확대하고 ~ 자막도") 말한 순서대로 각각 넣는다.
 - 자막은 한 줄, 대략 25자 이내. 말한 뜻을 바꾸지 않는다.
 - 게임 용어는 아래 사전의 표기를 그대로 쓴다.
+- 한글 자모 이름이나 웃음소리를 말하면 글자로 적는다: 키읔·키윽·퀴윽·쿡쿡·크크 → ㅋ, 히읗 → ㅎ. 반복한 만큼 ㅋ를 늘린다(최소 ㅋㅋ).
+- "~하는 거 넣어줘", "~하고", "~라고 해줘" 같은 지시 말투와 같은 말을 두 번 한 것은 자막에서 뺀다.
 
 ## 예시
 입력: 여기서 상자 열었는데 아무것도 없었다고 적어서 다듬어
@@ -82,11 +84,23 @@ const STYLE_GUIDE = `너는 한국어 게임 유튜브 영상의 편집 지시�
 입력: 아 이거 대박 웃기다 ㅋㅋㅋ
 출력: {"orders":[{"kind":"caption","style":"reaction","text":"ㅋㅋㅋㅋ 이게 되네?!","placement":"playhead"}]}
 
+입력: 아 쓰레기네 이씨 아 쓰레기네 하고 ㅋㅋ 넣어줘
+출력: {"orders":[{"kind":"caption","style":"reaction","text":"아 쓰레기네 ㅋㅋ","placement":"playhead"}]}
+
 입력: 아이템 이름 에이케이에스 세븐
 출력: {"orders":[{"kind":"caption","style":"item","text":"AKS.7","placement":"playhead"}]}
 
 입력: 여기 왼쪽 위 크게 확대하고 앞 자막 뒤에 바로 괄호치고 적 발견이라고 써줘
 출력: {"orders":[{"kind":"zoom","scale":150,"anchor":"top_left","holdSec":2},{"kind":"caption","style":"situation","text":"(적 발견)","placement":"after_previous"}]}`;
+
+/** Spoken Korean letter names → jamo ("키윽 키윽" → "ㅋㅋ"). Whisper writes what it hears, so a
+ *  request for ㅋㅋ arrives as letter names; fixing it before Claude keeps the fallback right too. */
+export function spokenJamo(s: string): string {
+  return s
+    .replace(/키[읔윽역옄]|퀴[윽읔]|키으[윽읔]/g, 'ㅋ')
+    .replace(/히[읗읏흫]/g, 'ㅎ')
+    .replace(/([ㅋㅎ])\s+(?=[ㅋㅎ])/g, '$1');
+}
 
 export function buildSystemPrompt(glossaryBlock: string): string {
   return `${STYLE_GUIDE}\n\n## 게임 용어 사전\n${glossaryBlock}`;
@@ -116,7 +130,8 @@ export function validatePayload(x: any): OrderPayload | null {
 export class Interpreter {
   constructor(private readonly opts: { client: Pick<Anthropic, 'messages'>; model: string; glossary: Glossary }) {}
 
-  async interpret(transcript: string): Promise<InterpretResult> {
+  async interpret(heard: string): Promise<InterpretResult> {
+    const transcript = spokenJamo(heard);
     const fallback = (error?: string): InterpretResult => ({
       status: 'unpolished',
       payloads: [{ kind: 'caption', style: 'narration', text: transcript, placement: 'playhead' }],

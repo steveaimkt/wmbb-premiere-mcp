@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { Interpreter, buildSystemPrompt, ORDERS_SCHEMA } from '../../voiceOrders/interpreter.js';
+import { Interpreter, buildSystemPrompt, ORDERS_SCHEMA, spokenJamo } from '../../voiceOrders/interpreter.js';
 import { Glossary } from '../../voiceOrders/glossary.js';
 
 function fakeClient(reply: unknown | (() => never), stop_reason = 'end_turn') {
@@ -27,7 +27,31 @@ async function glossary() {
 const T = '괄호치고 누가 밖에서 빠르게 뛰어온다';
 const fallback = { kind: 'caption', style: 'narration', text: T, placement: 'playhead' };
 
+describe('spokenJamo', () => {
+  test.each([
+    ['아 쓰레기네 키윽 키윽', '아 쓰레기네 ㅋㅋ'],
+    ['퀴윽퀴윽 넣어줘', 'ㅋㅋ 넣어줘'],
+    ['키읔키읔키읔', 'ㅋㅋㅋ'],
+    ['히읗 히읗', 'ㅎㅎ'],
+    ['키보드가 고장났다', '키보드가 고장났다'],
+  ])('%s → %s', (a, b) => expect(spokenJamo(a)).toBe(b));
+});
+
 describe('Interpreter', () => {
+  test('spoken letter names reach Claude (and the fallback) as jamo', async () => {
+    const c = fakeClient('not json');
+    const it = new Interpreter({ client: c, model: 'm', glossary: await glossary() });
+    const r = await it.interpret('아 쓰레기네 키윽 키윽');
+    expect(c.calls[0].messages[0].content).toBe('아 쓰레기네 ㅋㅋ');
+    expect(r.payloads[0]).toMatchObject({ text: '아 쓰레기네 ㅋㅋ' });
+  });
+
+  test('the style guide tells Claude letter names and laugh sounds are ㅋ/ㅎ', () => {
+    const s = buildSystemPrompt('');
+    expect(s).toContain('키읔');
+    expect(s).toContain('쿡쿡');
+  });
+
   test('one valid caption -> ready', async () => {
     const order = { kind: 'caption', style: 'situation', text: '(누군가가 밖에서 빠르게 달려오는 중)', placement: 'playhead' };
     const it = new Interpreter({ client: fakeClient({ orders: [order] }), model: 'claude-haiku-5-5', glossary: await glossary() });
