@@ -239,6 +239,30 @@ describe('VoiceOrdersDaemon apply safety', () => {
   });
 });
 
+describe('VoiceOrdersDaemon with a dead bridge', () => {
+  test('key-up does not wait for the marker before transcribing', async () => {
+    const { d, premiere } = setup();
+    premiere.setMarker = () => new Promise(() => {}); // bridge hangs
+    const id = await d.onKeyDown();
+    const done = d.onKeyUp(id, '/rec/a.wav', 1).then(() => 'done');
+    const r = await Promise.race([done, new Promise((res) => setTimeout(() => res('stalled'), 200))]);
+    expect(r).toBe('done');
+    expect((await d.orders())[0]!.status).toBe('ready');
+  });
+
+  test('ticking a checkbox with the bridge down skips the marker call', async () => {
+    const { d, premiere } = setup();
+    await record(d);
+    const [o] = await d.orders();
+    let markerCalls = 0;
+    premiere.setMarker = async () => { markerCalls++; return null; };
+    premiere.seq = null; // bridge went away
+    const u = await d.patch(o!.id, { checked: false });
+    expect(u.checked).toBe(false);
+    expect(markerCalls).toBe(0);
+  });
+});
+
 describe('VoiceOrdersDaemon edits', () => {
   test('PATCH timeSec moves the marker and re-sorts', async () => {
     const { d, premiere } = setup();

@@ -114,11 +114,17 @@ export class VoiceOrdersDaemon {
     const store = await this.deps.storeFor(key.projectPath ?? this.lastProject ?? UNKNOWN_PROJECT);
     const order = newOrder({ id: pendingId, sequenceId: key.sequenceId, timeSec: key.timeSec, recordingPath: wavPath, createdAt: key.createdAt });
     store.add(order);
-    if (order.timeSec !== null && this.deps.settings.markerMode === 'immediate') {
-      const markerId = await this.deps.premiere.setMarker(order, 'orange').catch(() => null);
-      store.update(order.id, { markerId });
-    }
     await this.persist(store);
+    if (order.timeSec !== null && this.deps.settings.markerMode === 'immediate') {
+      // Don't hold transcription behind the bridge (up to 60s when it stalls).
+      void this.deps.premiere.setMarker(order, 'orange').catch(() => null).then((markerId) => {
+        if (!markerId) return;
+        for (const o of store.list()) {
+          if (o.groupId === order.groupId && !o.markerId) store.update(o.id, { markerId });
+        }
+        return this.persist(store);
+      });
+    }
     await this.process(store, order.id, true);
   }
 
@@ -214,7 +220,7 @@ export class VoiceOrdersDaemon {
       }
     }
     let updated = store.update(id, next);
-    if (p.timeSec !== undefined || p.checked !== undefined) {
+    if (this.bridgeUp && (p.timeSec !== undefined || p.checked !== undefined)) {
       const color = updated.status === 'applied' ? 'green' : updated.checked ? 'orange' : 'gray';
       const markerId = await this.deps.premiere.setMarker(updated, color).catch(() => null);
       if (markerId) updated = store.update(id, { markerId });
@@ -225,7 +231,7 @@ export class VoiceOrdersDaemon {
 
   async remove(id: string): Promise<void> {
     const { store, order } = await this.findOrder(id);
-    if (order.markerId && order.timeSec !== null) await this.deps.premiere.setMarker(order, 'gray').catch(() => null);
+    if (this.bridgeUp && order.markerId && order.timeSec !== null) await this.deps.premiere.setMarker(order, 'gray').catch(() => null);
     store.remove(id);
     await this.persist(store);
   }
