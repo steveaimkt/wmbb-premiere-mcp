@@ -22,7 +22,7 @@ class FakePremiere implements PremierePort {
   existing: { startSec: number; endSec: number }[] = [];
   async activeSequence() { return this.seq; }
   async playhead() { return this.head; }
-  async setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'gray') {
+  async setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'white') {
     this.markers.push({ orderId: o.id, time: o.timeSec, color, markerId: o.markerId ?? null });
     return o.markerId ?? `m${this.markers.length}`;
   }

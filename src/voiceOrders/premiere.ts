@@ -11,7 +11,7 @@ import type { Settings, VoiceOrder } from './types.js';
 export interface PremierePort {
   activeSequence(): Promise<{ id: string; projectPath: string } | null>;
   playhead(): Promise<number | null>;
-  setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'gray'): Promise<string | null>;
+  setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'white'): Promise<string | null>;
   existingCaptions(seqId: string): Promise<{ startSec: number; endSec: number }[]>;
   backup(seqId: string): Promise<boolean>;
   placeCaption(seqId: string, c: PlacedCaption): Promise<{ ok: boolean; error?: string }>;
@@ -19,7 +19,8 @@ export interface PremierePort {
 }
 
 /** Marker colour indices (Premiere: 0 green … 7). Confirm in Task 1 probes. */
-export const MARKER_COLOR = { green: 0, orange: 3, gray: 7 } as const;
+// 26.5.2 실측: 0 초록 1 빨강 2 보라 3 주황 4 노랑 5 흰색 6 파랑 7 청록 (회색 없음)
+export const MARKER_COLOR = { green: 0, orange: 3, white: 5 } as const;
 
 function parse(r: any): any {
   if (typeof r === 'string') { try { return JSON.parse(r); } catch { return { success: false, error: r }; } }
@@ -63,7 +64,7 @@ export class BridgePremierePort implements PremierePort {
     return r?.success && typeof r.timeSec === 'number' ? r.timeSec : null;
   }
 
-  async setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'gray') {
+  async setMarker(o: VoiceOrder, color: 'orange' | 'green' | 'white') {
     if (o.timeSec === null) return null;
     const label = o.payload?.kind === 'caption' ? o.payload.text : o.payload?.kind === 'zoom' ? `확대 ${o.payload.scale}%` : (o.transcript ?? '음성 지시');
     const r = parse(await this.tools.executeTool('set_marker', {

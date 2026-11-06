@@ -22,6 +22,16 @@ describe('BridgePremierePort', () => {
     expect(f.calls[1]).toMatchObject({ name: 'set_clip_motion', args: { sequenceId: 'seqA', clipId: 'c1', timeBase: 'sequence' } });
   });
 
+  test('marker colors match 26.5.2 indices: orange=3, green=0, unchecked=white(5) — 26.5.2 has no gray', async () => {
+    const f = fakeTools({ set_marker: { success: true, markerId: 'm1' } });
+    const p = new BridgePremierePort(bridge, f.tools, settings);
+    const o = { id: 'o1', sequenceId: 'seqA', timeSec: 3, transcript: 't', payload: null, markerId: null } as any;
+    await p.setMarker(o, 'orange');
+    await p.setMarker(o, 'green');
+    await p.setMarker(o, 'white');
+    expect(f.calls.map((c) => c.args.colorIndex)).toEqual([3, 0, 5]);
+  });
+
   test('placeCaption targets the given sequence', async () => {
     const f = fakeTools({});
     const p = new BridgePremierePort(bridge, f.tools, settings);

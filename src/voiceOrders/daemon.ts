@@ -221,7 +221,7 @@ export class VoiceOrdersDaemon {
     }
     let updated = store.update(id, next);
     if (this.bridgeUp && (p.timeSec !== undefined || p.checked !== undefined)) {
-      const color = updated.status === 'applied' ? 'green' : updated.checked ? 'orange' : 'gray';
+      const color = updated.status === 'applied' ? 'green' : updated.checked ? 'orange' : 'white';
       const markerId = await this.deps.premiere.setMarker(updated, color).catch(() => null);
       if (markerId) updated = store.update(id, { markerId });
     }
@@ -231,7 +231,7 @@ export class VoiceOrdersDaemon {
 
   async remove(id: string): Promise<void> {
     const { store, order } = await this.findOrder(id);
-    if (this.bridgeUp && order.markerId && order.timeSec !== null) await this.deps.premiere.setMarker(order, 'gray').catch(() => null);
+    if (this.bridgeUp && order.markerId && order.timeSec !== null) await this.deps.premiere.setMarker(order, 'white').catch(() => null);
     store.remove(id);
     await this.persist(store);
   }

@@ -35,6 +35,7 @@
 **변경 이력:**
 | 날짜 | 변경 내용 | 대상 | 사유 |
 |------|----------|------|------|
+| 2026-11-07 | 음성 지시용 26.5.2 실측 | (기록), `voiceOrders/premiere.ts` | ① **프리미어에서 만든 .mogrt**(1말하는자막)는 `importMGT`로 놓이지만 MGT 컴포넌트가 없고 소스 텍스트가 바이너리라 문구 변경 불가, **AE .mogrt**는 `textEditValue` setValue 후 재조회로 확인 ② 재생 중 `createMarker`는 재생을 멈추지 않음 ③ `videoTrack.name =` 으로 트랙 이름 변경됨 ④ 마커 색 인덱스 0 초록·1 빨강·2 보라·3 주황·4 노랑·5 흰색·6 파랑·7 청록(회색 없음 → 체크 해제 마커를 7에서 5로 수정) ⑤ `Sequence.clone()`은 활성 시퀀스를 바꿈 |
 | 2026-11-04 | **`import_files`·`rename_item`·`add_caption_track`·`set_clip_motion`·`set_track_mute` 신규** (모두 재조회 `verify` 계약) | `tools/index.ts`, `utils/prprojCaptions.ts` | 파일 가져오기·이름 바꾸기·캡션 배치·확대 키프레임·음소거가 없어 사용자가 직접 클릭하거나 XML로 우회했고, 화면 제어로 대신하다 키 입력이 타임라인에 들어간 사고까지 있었다. 26.5.2 정식판 테스트 복사 시퀀스에서 실측 |
 | 2026-11-04 | 26.5.2 실측 사실 정리 | (기록) | ① `importFiles`는 boolean만 반환 → 노드 id 전후 비교로 새 항목 탐지(FCP7 XML은 시퀀스+미디어로 들어옴) ② 캡션 트랙은 DOM·QE 어디에도 안 보임 → `Sequence.exportAsProject`로 임시 prproj를 써서 `CaptionDataClipTrack(Item)`을 세는 것이 유일한 재조회 ③ 키프레임 시간은 클립 **미디어 시간**(`inPoint`+오프셋), 보간 코드 0=선형·4=정지·5=베지어 ④ QE `exportFramePNG`는 모션 효과를 렌더하지 않음 → 모션 육안 검증에 쓰지 말 것 ⑤ `projectItem.name =`이 시퀀스 이름까지 바꿈. 기존 `duplicate_sequence`는 `clone()`이 새 시퀀스를 반환하지 않아 이름 변경이 안 됨(별도 수정 필요) |
 | 2026-11-04 | 캡션 스타일 조사(구현 안 함) | — | 캡션 트랙 스타일·위치·정렬을 바꾸는 ExtendScript API 없음(스타일은 prproj 안 base64 바이너리). 대안 MOGRT: `importMGT`는 반환값이 null이어도 배치되므로 재조회 필요. **AE에서 만든 .mogrt**는 `getMGTComponent()` 텍스트 파라미터(JSON의 `textEditValue`) `setValue`로 문구 변경 확인. **프리미어에서 만든 그래픽**은 MGT 컴포넌트가 없고 `소스 텍스트` setValue 시 텍스트가 비어버림 → 사용 불가 |
