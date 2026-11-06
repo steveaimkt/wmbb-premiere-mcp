@@ -9,6 +9,9 @@ import type { Glossary } from './glossary.js';
 
 export type SttResult = { ok: true; text: string } | { ok: false; error: string };
 
+/** Order keywords biased into Whisper's prompt: "괄호치고" was heard as "가로치고" without it. */
+export const COMMAND_WORDS = ['괄호치고', '확대해줘', '아이템 이름', '앞 자막 뒤에 바로', '라고 적어서 다듬어'];
+
 type Pending = { resolve: (r: SttResult) => void; timer: NodeJS.Timeout };
 
 export class SttWorker {
@@ -82,7 +85,7 @@ export class SttWorker {
         this.discard(proc, `stt worker restarted after a ${this.timeoutMs}ms timeout`);
       }, this.timeoutMs);
       this.pending.set(id, { resolve, timer });
-      const prompt = this.opts.glossary.promptTerms().join(', ');
+      const prompt = [...COMMAND_WORDS, ...this.opts.glossary.promptTerms()].join(', ');
       proc.stdin.write(JSON.stringify({ id, wav: wavPath, prompt }) + '\n');
     });
   }

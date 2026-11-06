@@ -34,6 +34,24 @@ def load_model(name: str):
         return WhisperModel(name, device="cpu", compute_type="int8")
 
 
+def load_audio(path: str):
+    """Our recordings are 16 kHz mono PCM16 WAV: read them with the stdlib so
+    decoding does not depend on PyAV (version mismatches break av.open). Any
+    other file is passed through as a path."""
+    import wave
+
+    try:
+        import numpy as np
+
+        with wave.open(path, "rb") as w:
+            if w.getframerate() == 16000 and w.getnchannels() == 1 and w.getsampwidth() == 2:
+                pcm = w.readframes(w.getnframes())
+                return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    except (wave.Error, EOFError, ImportError):
+        pass
+    return path
+
+
 def main() -> int:
     try:
         model = load_model(os.environ.get("VOICE_ORDERS_STT_MODEL", "small"))
@@ -51,7 +69,7 @@ def main() -> int:
             req = json.loads(line)
             req_id = req.get("id")
             segments, _info = model.transcribe(
-                req["wav"],
+                load_audio(req["wav"]),
                 language="ko",
                 vad_filter=True,
                 initial_prompt=req.get("prompt") or None,

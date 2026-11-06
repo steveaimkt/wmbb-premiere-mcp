@@ -63,6 +63,8 @@ describe('SttWorker', () => {
     const r = await w.transcribe('prompt');
     expect(r.ok && r.text).toContain('AKS.7');
     expect(r.ok && r.text).toContain('쿠엔');
+    expect(r.ok && r.text).toContain('괄호치고');
+    expect(r.ok && r.text).toContain('확대해줘');
   });
 
   test('worker error passes through', async () => {
