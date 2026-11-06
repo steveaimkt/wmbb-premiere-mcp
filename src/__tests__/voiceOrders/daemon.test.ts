@@ -359,3 +359,27 @@ describe('VoiceOrdersDaemon HTTP', () => {
     }
   });
 });
+
+describe('VoiceOrdersDaemon → hotkey helper proxy', () => {
+  test('/record/start is forwarded to the helper with the shared token', async () => {
+    const { createServer } = await import('http');
+    const seen: { url?: string; token?: string } = {};
+    const helper = createServer((req, res) => { seen.url = req.url; seen.token = String(req.headers['x-voice-orders-token'] ?? ''); res.end('{}'); });
+    await new Promise<void>((r) => helper.listen(0, '127.0.0.1', () => r()));
+    const helperPort = (helper.address() as any).port;
+    const { d } = setupWithToken('s3cret');
+    (d as any).deps.helperUrl = `http://127.0.0.1:${helperPort}`;
+    const port = await d.listen(0);
+    try {
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/record/start', headers: { 'x-voice-orders-token': 's3cret' } }, (res) => { res.resume(); resolve(res.statusCode!); });
+        req.on('error', reject); req.end();
+      });
+      expect(status).toBe(200);
+      expect(seen).toEqual({ url: '/start', token: 's3cret' });
+    } finally {
+      await d.close();
+      helper.close();
+    }
+  });
+});

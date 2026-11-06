@@ -31,6 +31,8 @@ export interface DaemonDeps {
   glossary?: Glossary;
   /** Shared secret (token file, owner-only). When set, every request must carry it. */
   token?: string;
+  /** Hotkey helper base URL (default HELPER_URL). */
+  helperUrl?: string;
 }
 
 type PendingKey = { sequenceId: string | null; projectPath: string | null; timeSec: number | null; createdAt: string };
@@ -409,7 +411,9 @@ export class VoiceOrdersDaemon {
       return this.send(res, 200, { success: true });
     }
     if (m === 'POST' && (url.pathname === '/record/start' || url.pathname === '/record/stop')) {
-      const r = await fetch(`${HELPER_URL}/${parts[1] === 'start' ? 'start' : 'stop'}`, { method: 'POST' })
+      const r = await fetch(`${this.deps.helperUrl ?? HELPER_URL}/${parts[1] === 'start' ? 'start' : 'stop'}`, {
+        method: 'POST', headers: this.deps.token ? { 'x-voice-orders-token': this.deps.token } : {},
+      })
         .then((x) => x.ok).catch(() => false);
       return this.send(res, r ? 200 : 502, { success: r, ...(r ? {} : { error: 'hotkey helper not reachable' }) });
     }
