@@ -13,7 +13,9 @@ import { VoiceOrdersDaemon } from './daemon.js';
 import { readJsonOr } from './fsutil.js';
 import { Glossary } from './glossary.js';
 import { Interpreter } from './interpreter.js';
-import { glossaryPath, projectDir, settingsPath } from './paths.js';
+import { glossaryPath, projectDir, settingsPath, tokenPath } from './paths.js';
+import { randomBytes } from 'crypto';
+import { promises as fs } from 'fs';
 import { BridgePremierePort } from './premiere.js';
 import { OrderStore } from './store.js';
 import { SttWorker } from './stt.js';
@@ -21,6 +23,21 @@ import { DEFAULT_SETTINGS, type Settings } from './types.js';
 
 export const DAEMON_PORT = 47613;
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** Owner-only token file shared with the hotkey helper and the review panel. */
+async function loadToken(): Promise<string> {
+  const file = tokenPath();
+  try {
+    const t = (await fs.readFile(file, 'utf8')).trim();
+    if (t) { await fs.chmod(file, 0o600); return t; }
+  } catch (e: any) {
+    if (e?.code !== 'ENOENT') throw e;
+  }
+  const t = randomBytes(24).toString('hex');
+  await fs.mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await fs.writeFile(file, t, { mode: 0o600 });
+  return t;
+}
 
 async function main(): Promise<void> {
   const saved = await readJsonOr<Partial<Settings>>(settingsPath(), {});
@@ -49,6 +66,7 @@ async function main(): Promise<void> {
     },
     settings,
     glossary,
+    token: await loadToken(),
   });
   const port = await daemon.listen(Number(process.env.VOICE_ORDERS_PORT || DAEMON_PORT));
   console.log(`[voice-orders] listening on http://127.0.0.1:${port} (model ${settings.model})`);

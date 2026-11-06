@@ -3,6 +3,7 @@
  * then review-and-apply onto the active Premiere sequence.
  * Local HTTP API on 127.0.0.1 only; requests from web origins are refused.
  */
+import { timingSafeEqual } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import type { AddressInfo } from 'net';
 import { v4 as uuidv4 } from 'uuid';
@@ -28,6 +29,8 @@ export interface DaemonDeps {
   storeFor: (projectPath: string) => Promise<OrderStore>;
   settings: Settings;
   glossary?: Glossary;
+  /** Shared secret (token file, owner-only). When set, every request must carry it. */
+  token?: string;
 }
 
 type PendingKey = { sequenceId: string | null; projectPath: string | null; timeSec: number | null; createdAt: string };
@@ -163,8 +166,14 @@ export class VoiceOrdersDaemon {
     });
   }
 
+  private assertReprocessable(order: VoiceOrder): void {
+    if (order.status === 'applied') throw new HttpError(409, 'order already applied; delete it from the timeline first');
+    if (this.applying) throw new HttpError(409, 'apply is running; try again after it finishes');
+  }
+
   async retry(id: string): Promise<void> {
-    const { store } = await this.findOrder(id);
+    const { store, order } = await this.findOrder(id);
+    this.assertReprocessable(order);
     store.update(id, { status: 'processing', error: undefined });
     await this.persist(store);
     await this.process(store, id, true);
@@ -172,6 +181,7 @@ export class VoiceOrdersDaemon {
 
   async repolish(id: string): Promise<void> {
     const { store, order } = await this.findOrder(id);
+    this.assertReprocessable(order);
     if (!order.transcript) throw new HttpError(409, 'no transcript to polish; use retry');
     store.update(id, { status: 'processing', error: undefined });
     await this.persist(store);
@@ -222,7 +232,20 @@ export class VoiceOrdersDaemon {
 
   // ---------- apply ----------
 
+  private applying = false;
+
+  /** One apply at a time: a double click must not place every caption twice. */
   async apply(): Promise<ApplyReport> {
+    if (this.applying) return { success: false, applied: [], failed: [], backupOk: false, error: 'apply already running' };
+    this.applying = true;
+    try {
+      return await this.applyOnce();
+    } finally {
+      this.applying = false;
+    }
+  }
+
+  private async applyOnce(): Promise<ApplyReport> {
     const { seq, store } = await this.current();
     if (!seq) return { success: false, applied: [], failed: [], backupOk: false, error: 'no active sequence (Start Bridge?)' };
     const targets = store.list(seq.id).filter((o) => o.checked && o.payload && o.timeSec !== null && APPLICABLE.has(o.status));
@@ -234,29 +257,37 @@ export class VoiceOrdersDaemon {
     const applied: string[] = [];
     const failed: { id: string; error: string }[] = [];
     const mark = async (o: VoiceOrder, r: { ok: boolean; error?: string }) => {
+      if (!store.get(o.id)) {
+        // Deleted while apply ran: report what happened on the timeline, keep going.
+        if (r.ok) applied.push(o.id); else failed.push({ id: o.id, error: r.error ?? 'failed' });
+        return;
+      }
       if (r.ok) {
         applied.push(o.id);
         const u = store.update(o.id, { status: 'applied', error: undefined });
         const markerId = await this.deps.premiere.setMarker(u, 'green').catch(() => null);
-        if (markerId) store.update(o.id, { markerId });
+        if (markerId && store.get(o.id)) store.update(o.id, { markerId });
       } else {
         failed.push({ id: o.id, error: r.error ?? 'failed' });
         store.update(o.id, { status: 'apply_failed', error: r.error });
       }
     };
 
-    const existing = await this.deps.premiere.existingCaptions(seq.id).catch(() => []);
-    for (const c of layoutCaptions(targets, existing)) {
-      const o = store.get(c.orderId)!;
-      await mark(o, await this.deps.premiere.placeCaption(seq.id, c).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
+    try {
+      const existing = await this.deps.premiere.existingCaptions(seq.id).catch(() => []);
+      const byId = new Map(targets.map((o) => [o.id, o]));
+      for (const c of layoutCaptions(targets, existing)) {
+        await mark(byId.get(c.orderId)!, await this.deps.premiere.placeCaption(seq.id, c).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
+      }
+      for (const o of targets) {
+        if (o.payload?.kind !== 'zoom') continue;
+        const z = o.payload;
+        const keys = zoomKeyframes(o.timeSec!, z.scale, z.holdSec, z.anchor);
+        await mark(o, await this.deps.premiere.zoom(seq.id, o.timeSec!, keys).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
+      }
+    } finally {
+      await this.persist(store);
     }
-    for (const o of targets) {
-      if (o.payload?.kind !== 'zoom') continue;
-      const z = o.payload;
-      const keys = zoomKeyframes(o.timeSec!, z.scale, z.holdSec, z.anchor);
-      await mark(o, await this.deps.premiere.zoom(seq.id, o.timeSec!, keys).catch((e) => ({ ok: false, error: String(e?.message ?? e) })));
-    }
-    await this.persist(store);
     return { success: failed.length === 0, applied, failed, backupOk: true };
   }
 
@@ -322,11 +353,23 @@ export class VoiceOrdersDaemon {
     if (origin) (res as any).__origin = origin;
 
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    // DNS rebinding: a page on evil.example resolving to 127.0.0.1 still sends its own Host.
+    const port = (this.server?.address() as AddressInfo | null)?.port;
+    const host = String(req.headers.host ?? '');
+    if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return this.send(res, 403, { success: false, error: 'bad host' });
+    // Origin "null" (sandboxed iframes) cannot be told apart from the CEP panel, so a
+    // token is the real gate. EventSource cannot set headers: /events may pass ?token=.
+    if (this.deps.token !== undefined && req.method !== 'OPTIONS') {
+      const given = String(req.headers['x-voice-orders-token'] ?? (url.pathname === '/events' ? url.searchParams.get('token') ?? '' : ''));
+      const a = Buffer.from(given);
+      const b = Buffer.from(this.deps.token);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) return this.send(res, 401, { success: false, error: 'missing or wrong token' });
+    }
     const parts = url.pathname.split('/').filter(Boolean);
     const m = req.method ?? 'GET';
 
     if (m === 'OPTIONS') {
-      res.writeHead(204, { ...this.cors(res), 'access-control-allow-methods': 'GET,POST,PATCH,DELETE', 'access-control-allow-headers': 'content-type' });
+      res.writeHead(204, { ...this.cors(res), 'access-control-allow-methods': 'GET,POST,PATCH,DELETE', 'access-control-allow-headers': 'content-type, x-voice-orders-token' });
       return void res.end();
     }
     if (m === 'GET' && url.pathname === '/events') {

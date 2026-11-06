@@ -36,6 +36,12 @@ class FakePremiere implements PremierePort {
   async zoom(_seq: string, atSec: number) { this.zooms.push(atSec); return { ok: true }; }
 }
 
+function setupWithToken(token: string) {
+  const s = setup();
+  (s.d as any).deps.token = token;
+  return s;
+}
+
 function setup(over: { stt?: string | null; result?: InterpretResult } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'vo-daemon-'));
   const premiere = new FakePremiere();
@@ -196,6 +202,43 @@ describe('VoiceOrdersDaemon apply', () => {
   });
 });
 
+describe('VoiceOrdersDaemon apply safety', () => {
+  test('concurrent apply calls place each caption once', async () => {
+    const { d, premiere } = setup();
+    await record(d);
+    const [r1, r2] = await Promise.all([d.apply(), d.apply()]);
+    expect(premiere.placed).toHaveLength(1);
+    expect([r1.applied.length, r2.applied.length].sort()).toEqual([0, 1]);
+    expect([r1, r2].some((r) => r.error === 'apply already running')).toBe(true);
+  });
+
+  test('retry and repolish refuse applied orders', async () => {
+    const { d } = setup();
+    await record(d);
+    await d.apply();
+    const [o] = await d.orders();
+    await expect(d.retry(o!.id)).rejects.toThrow(/applied/);
+    await expect(d.repolish(o!.id)).rejects.toThrow(/applied/);
+    expect((await d.orders())[0]!.status).toBe('applied');
+  });
+
+  test('an order deleted mid-apply does not abort the rest', async () => {
+    const s = setup({ result: { status: 'ready', payloads: [CAP('one'), CAP('two')] } });
+    await record(s.d);
+    const list = await s.d.orders();
+    const orig = s.premiere.placeCaption.bind(s.premiere);
+    s.premiere.placeCaption = async (seq: string, c: any) => {
+      const r = await orig(seq, c);
+      if (c.text === 'one') await s.d.remove(list[0]!.id);
+      return r;
+    };
+    const r = await s.d.apply();
+    expect(s.premiere.placed).toEqual(['one', 'two']);
+    expect(r.applied).toContain(list[1]!.id);
+    expect((await s.d.orders()).find((o) => o.id === list[1]!.id)!.status).toBe('applied');
+  });
+});
+
 describe('VoiceOrdersDaemon edits', () => {
   test('PATCH timeSec moves the marker and re-sorts', async () => {
     const { d, premiere } = setup();
@@ -226,6 +269,31 @@ describe('VoiceOrdersDaemon edits', () => {
     const list = await s.d.orders();
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ status: 'ready', payload: CAP('다듬음') });
+  });
+});
+
+describe('VoiceOrdersDaemon HTTP auth', () => {
+  function raw(port: number, method: string, path: string, headers: Record<string, string>) {
+    return new Promise<number>((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port, method, path, headers }, (res) => { res.resume(); resolve(res.statusCode!); });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  test('token required; Origin null without token refused; foreign Host refused', async () => {
+    const { d } = setupWithToken('s3cret');
+    const port = await d.listen(0);
+    try {
+      expect(await raw(port, 'GET', '/orders', {})).toBe(401);
+      expect(await raw(port, 'POST', '/apply', { origin: 'null' })).toBe(401);
+      expect(await raw(port, 'GET', '/orders', { 'x-voice-orders-token': 'wrong' })).toBe(401);
+      expect(await raw(port, 'GET', '/orders', { 'x-voice-orders-token': 's3cret' })).toBe(200);
+      expect(await raw(port, 'GET', '/orders', { 'x-voice-orders-token': 's3cret', host: `evil.example:${port}` })).toBe(403);
+      expect(await raw(port, 'GET', '/orders', { 'x-voice-orders-token': 's3cret', host: `localhost:${port}` })).toBe(200);
+    } finally {
+      await d.close();
+    }
   });
 });
 

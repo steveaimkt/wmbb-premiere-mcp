@@ -17,3 +17,4 @@ export function projectDir(projectPath: string): string {
 export function glossaryPath(): string { return join(voiceOrdersRoot(), 'glossary.json'); }
 export function settingsPath(): string { return join(voiceOrdersRoot(), 'settings.json'); }
 export function recordingsDir(projectPath: string): string { return join(projectDir(projectPath), 'recordings'); }
+export function tokenPath(): string { return join(voiceOrdersRoot(), 'token'); }
