@@ -1240,10 +1240,14 @@ export class PremiereProTools {
 
         var fps = activeSequence.timebase ? (254016000000 / parseInt(activeSequence.timebase, 10)) : 30;
         var totalFrames = Math.round(${normalizedTime} * fps);
-        var hours = Math.floor(totalFrames / (fps * 3600));
-        var mins = Math.floor((totalFrames % (fps * 3600)) / (fps * 60));
-        var secs = Math.floor((totalFrames % (fps * 60)) / fps);
-        var frames = Math.round(totalFrames % fps);
+        // Timecode digits count frames in an INTEGER base (30 for 29.97, 24 for
+        // 23.976). Using the fractional fps here put every razor ~0.1% late
+        // (0.55s at 9 minutes) and made short spans miss the delete pass.
+        var tcBase = Math.round(fps);
+        var hours = Math.floor(totalFrames / (tcBase * 3600));
+        var mins = Math.floor((totalFrames % (tcBase * 3600)) / (tcBase * 60));
+        var secs = Math.floor((totalFrames % (tcBase * 60)) / tcBase);
+        var frames = totalFrames % tcBase;
         function pad(n) { return n < 10 ? "0" + n : "" + n; }
         var tc = pad(hours) + ":" + pad(mins) + ":" + pad(secs) + ":" + pad(frames);
 
@@ -1777,19 +1781,36 @@ export class PremiereProTools {
         app.project.openSequence(backup.sequenceID);
 
         var deleted = null;
+        var deleteError = null;
         ${deleteDamaged ? `
         var damaged = __findSequence(${JSON.stringify(damagedSequenceId ?? '')});
-        if (damaged && damaged.sequenceID !== backup.sequenceID) {
-          deleted = damaged.name;
-          damaged.projectItem.deleteBin();
+        if (!damaged) {
+          deleteError = "damaged sequence not found";
+        } else if (damaged.sequenceID === backup.sequenceID) {
+          deleteError = "damaged sequence is the backup itself - refusing to delete";
+        } else {
+          // projectItem.deleteBin() only removes bins; on a sequence it silently
+          // does nothing, so the call used to report a delete that never happened.
+          // app.project.deleteSequence() is the API for sequences. Verify by
+          // looking the sequence up again rather than trusting the return value.
+          var damagedName = damaged.name;
+          var damagedId = damaged.sequenceID;
+          try { app.project.deleteSequence(damaged); } catch (de) { deleteError = de.toString(); }
+          var stillThere = false;
+          for (var si = 0; si < app.project.sequences.numSequences; si++) {
+            if (app.project.sequences[si].sequenceID === damagedId) { stillThere = true; break; }
+          }
+          if (stillThere) { if (!deleteError) deleteError = "deleteSequence returned but the sequence is still in the project"; }
+          else { deleted = damagedName; deleteError = null; }
         }` : ''}
 
         return JSON.stringify({
-          success: true,
+          success: deleteError === null,
           message: "Restored \\"" + backup.name + "\\"" + (deleted ? " and deleted \\"" + deleted + "\\"" : ""),
           activeSequence: backup.name,
           activeSequenceId: backup.sequenceID,
-          deletedSequence: deleted
+          deletedSequence: deleted,
+          deleteError: deleteError
         });
       } catch (e) {
         return JSON.stringify({ success: false, error: e.toString() });
@@ -1869,10 +1890,14 @@ export class PremiereProTools {
 
         function toTc(t) {
           var totalFrames = Math.round(t * fps);
-          var hours = Math.floor(totalFrames / (fps * 3600));
-          var mins = Math.floor((totalFrames % (fps * 3600)) / (fps * 60));
-          var secs = Math.floor((totalFrames % (fps * 60)) / fps);
-          var frames = Math.round(totalFrames % fps);
+          // Timecode digits count frames in an INTEGER base (30 for 29.97, 24 for
+          // 23.976). Using the fractional fps here put every razor ~0.1% late
+          // (0.55s at 9 minutes) and made short spans miss the delete pass.
+          var tcBase = Math.round(fps);
+          var hours = Math.floor(totalFrames / (tcBase * 3600));
+          var mins = Math.floor((totalFrames % (tcBase * 3600)) / (tcBase * 60));
+          var secs = Math.floor((totalFrames % (tcBase * 60)) / tcBase);
+          var frames = totalFrames % tcBase;
           function pad(n) { return n < 10 ? "0" + n : "" + n; }
           return pad(hours) + ":" + pad(mins) + ":" + pad(secs) + ":" + pad(frames);
         }

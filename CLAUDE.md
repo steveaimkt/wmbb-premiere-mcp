@@ -35,6 +35,8 @@
 **변경 이력:**
 | 날짜 | 변경 내용 | 대상 | 사유 |
 |------|----------|------|------|
+| 2026-11-14 | `toTc()` 타임코드를 정수 기준(`Math.round(fps)`)으로 계산 | `tools/index.ts` (`razor_timeline_at_time`, `apply_timeline_removals`) | 29.97fps에서 초·프레임 자리를 분수 fps로 계산해 프리미어가 30 기준 NDF로 읽으면서 **레이저가 0.1% 늦게 들어감**(9분 지점 0.55초). 중간점 매칭이 어긋나 짧은 구간은 삭제되지 않았고, 말 앞머리가 잘림. 실측: 69컷 중 30컷 미삭제 |
+| 2026-11-14 | `restore_sequence_backup` 삭제를 `app.project.deleteSequence()`로 교체 + 재조회 검증 | `tools/index.ts` | `projectItem.deleteBin()`은 시퀀스에 무효인데 `deletedSequence`를 채워 성공으로 보고함. 이제 지운 뒤 목록을 다시 읽어 남아 있으면 `success:false` + `deleteError` |
 | 2026-08-03 | **핵심 기능 2축 정립** — `caption_review_workflow` 프롬프트 신설, 스킬을 `프리미어-컷편집` / `자막-검수`로 분리 | `prompts/index.ts`, `~/.claude/skills/` | 자막이 컷편집의 마지막 단계로 묶여 있어, 편집만 손본 뒤 자막만 다시 만들려 할 때마다 컷편집 전체를 거쳐야 했다. 실사용에서 자막 요청이 훨씬 잦다 |
 | 2026-08-03 | `insert_clip` 신규 | `tools/index.ts` | 서버에 **가산 편집이 전혀 없었다.** 콜드오픈·구간 복원·B롤을 전부 사용자가 수동으로 해야 했고, 실사용에서 두 번 막혔다. insert(리플)/overwrite 지원, projectItem in/out을 쓰고 원복 |
 | 2026-08-03 | `list_sequence_tracks`에 소스 in/out + `verify` + `compact` | `tools/index.ts` | 클립별 `inPoint/outPoint`가 없어 자막 재매핑에 `get_clip_properties`를 클립 수만큼 호출해야 했다(실사용 15+회). 이제 **한 콜이 source→timeline 맵**. 갭·V/A 정합·실측 길이도 같이 반환. 클립 수백 개 토큰 초과는 `compact`로 해소 |
