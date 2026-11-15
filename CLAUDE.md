@@ -35,6 +35,7 @@
 **변경 이력:**
 | 날짜 | 변경 내용 | 대상 | 사유 |
 |------|----------|------|------|
+| 2026-11-15 | `read_sequence_captions`: ExtendScript가 0개면 저장된 `.prproj`에서 캡션 클립을 읽음(`utils/prprojCaptions.ts`), 없는 `sequenceId`는 오류 | `tools/index.ts`, `utils/prprojCaptions.ts` | ExtendScript는 새 방식 캡션 트랙을 못 봐서 **캡션 121개가 깔린 시퀀스를 `0개, success:true`로 보고**함. 또 존재하지 않는 ID를 주면 활성 시퀀스를 대신 읽어 엉뚱한 결과를 냄. 이제 파일 판독 결과는 `source:"projectFile"`+`projectFileSavedAt`(마지막 저장 기준임을 명시), 판독 불가면 `success:false`. 실측: SRT 가져오기 후 첫 큐(00:00:00,000 시작) 누락과 마지막 큐 1프레임 잘림을 이 경로로 찾음 |
 | 2026-11-14 | `toTc()` 타임코드를 정수 기준(`Math.round(fps)`)으로 계산 | `tools/index.ts` (`razor_timeline_at_time`, `apply_timeline_removals`) | 29.97fps에서 초·프레임 자리를 분수 fps로 계산해 프리미어가 30 기준 NDF로 읽으면서 **레이저가 0.1% 늦게 들어감**(9분 지점 0.55초). 중간점 매칭이 어긋나 짧은 구간은 삭제되지 않았고, 말 앞머리가 잘림. 실측: 69컷 중 30컷 미삭제 |
 | 2026-11-14 | `restore_sequence_backup` 삭제를 `app.project.deleteSequence()`로 교체 + 재조회 검증 | `tools/index.ts` | `projectItem.deleteBin()`은 시퀀스에 무효인데 `deletedSequence`를 채워 성공으로 보고함. 이제 지운 뒤 목록을 다시 읽어 남아 있으면 `success:false` + `deleteError` |
 | 2026-08-03 | **핵심 기능 2축 정립** — `caption_review_workflow` 프롬프트 신설, 스킬을 `프리미어-컷편집` / `자막-검수`로 분리 | `prompts/index.ts`, `~/.claude/skills/` | 자막이 컷편집의 마지막 단계로 묶여 있어, 편집만 손본 뒤 자막만 다시 만들려 할 때마다 컷편집 전체를 거쳐야 했다. 실사용에서 자막 요청이 훨씬 잦다 |

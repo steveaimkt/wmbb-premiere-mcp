@@ -15,6 +15,7 @@ import { findTextSpans, DEFAULT_FILLERS } from '../utils/cutEditing.js';
 import { transcribeAudio } from '../utils/whisperRunner.js';
 import { proofreadTranscript } from '../utils/proofread.js';
 import { writeFileSync } from 'fs';
+import { readCaptionsFromProjectFile } from '../utils/prprojCaptions.js';
 
 export interface MCPTool {
   name: string;
@@ -375,9 +376,9 @@ export class PremiereProTools {
       // Captions
       {
         name: 'read_sequence_captions',
-        description: 'Reads all caption tracks of a sequence and returns each caption clip as { start, end, text }, with timestamps in seconds. Use this to find the timecodes of specific spoken phrases.',
+        description: 'Reads the caption clips placed on a sequence and returns each as { start, end, startFrame, endFrame, text } (seconds / frames). The scripting API cannot see modern caption tracks, so when it finds none the tool reads the SAVED project file instead (source:"projectFile") — that reflects the last save only, so save before calling if captions were just placed. Use it to verify an imported SRT landed on the timeline frame-exactly. An unknown sequenceId is an error (no fallback to the active sequence).',
         inputSchema: z.object({
-          sequenceId: z.string().optional().describe('Optional sequence ID. Defaults to the active sequence.')
+          sequenceId: z.string().optional().describe('Optional sequence ID. Defaults to the active sequence. If given and not found, the call fails.')
         })
       },
 
@@ -1039,9 +1040,11 @@ export class PremiereProTools {
     const seqArg = sequenceId ? JSON.stringify(sequenceId) : 'null';
     const script = `
       try {
-        var sequence = ${seqArg} ? __findSequence(${seqArg}) : null;
-        if (!sequence) sequence = app.project.activeSequence;
-        if (!sequence) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var requested = ${seqArg};
+        var sequence = requested ? __findSequence(requested) : app.project.activeSequence;
+        // An explicit ID that does not exist is an error — never silently read another sequence.
+        if (!sequence) return JSON.stringify({ success: false, error: requested ? ("Sequence not found: " + requested) : "No active sequence" });
+        var apiAvailable = !!(sequence.getCaptionTracks || sequence.captionTracks);
 
         // Premiere caption tracks live alongside video/audio tracks. Different
         // Premiere versions expose them differently:
@@ -1113,6 +1116,8 @@ export class PremiereProTools {
           success: true,
           sequenceId: sequence.sequenceID,
           sequenceName: sequence.name,
+          projectPath: app.project.path,
+          apiAvailable: apiAvailable,
           trackCount: trackCount,
           captionCount: output.length,
           captions: output
@@ -1121,7 +1126,38 @@ export class PremiereProTools {
         return JSON.stringify({ success: false, error: e.toString() });
       }
     `;
-    return await this.bridge.executeScript(script);
+    const raw: any = await this.bridge.executeScript(script);
+    const live = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!live?.success) return live;
+    if (live.captionCount > 0) return { ...live, source: 'extendscript' };
+
+    // ExtendScript is blind to modern caption tracks: it reports 0 even when the timeline is full
+    // of captions (verified 2026-11-15, 121 clips read back as 0). Read the saved project file instead.
+    const base = { sequenceId: live.sequenceId, sequenceName: live.sequenceName };
+    if (!live.projectPath) {
+      return { success: false, ...base, error: 'Scripting API returned no captions and the project has never been saved, so the project file cannot be read either. Save the project and retry.' };
+    }
+    try {
+      const fromFile = readCaptionsFromProjectFile(String(live.projectPath), String(live.sequenceId));
+      if (!fromFile.sequenceFound) {
+        return { success: false, ...base, source: 'projectFile', projectFileSavedAt: fromFile.projectFileSavedAt,
+          error: 'Sequence is not in the saved project file (created after the last save?). Save the project and retry.' };
+      }
+      return {
+        success: true,
+        ...base,
+        source: 'projectFile',
+        projectFileSavedAt: fromFile.projectFileSavedAt,
+        warning: 'Read from the saved .prproj because the scripting API cannot see caption tracks. Changes made after projectFileSavedAt are NOT included — save the project first if the timeline was edited.',
+        ticksPerFrame: fromFile.ticksPerFrame,
+        trackCount: fromFile.trackCount,
+        captionCount: fromFile.captions.length,
+        textAvailable: fromFile.textAvailable,
+        captions: fromFile.captions,
+      };
+    } catch (e: any) {
+      return { success: false, ...base, source: 'projectFile', error: `Scripting API returned no captions and reading the project file failed: ${e?.message || e}` };
+    }
   }
 
   // Timeline Operations Implementation
