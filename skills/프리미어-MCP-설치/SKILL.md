@@ -187,5 +187,7 @@ npm run setup:doctor
 | 저장소를 업데이트한 뒤부터 이상하다 | `npm run build` 후 패널 오른쪽 클릭 → **Reload** |
 | 전사 툴만 실패 | faster-whisper가 설치된 Python을 서버가 쓰고 있나 (`PYTHON_PATH`) |
 | 서버가 목록에 없다 | 클라이언트를 완전히 다시 시작했나 · `claude mcp list` 에 `premiere-pro` 가 있나 |
+| 다른 폴더에서는 되는데 이 폴더에서만 도구가 없다 | 등록이 특정 프로젝트(local scope)에만 걸려 있다 · `claude mcp get <이름>` 의 Scope 확인 → `--scope user` 로 다시 등록 후 세션 재시작 |
+| 작업 폴더를 옮긴 뒤 전사만 실패 | `PYTHON_PATH` 가 옮기기 전 `.venv` 를 가리킨다 · 경로를 새 위치로 고쳐 다시 등록 |
 
 지울 때는 `npm run uninstall:mac`. 패널과 클로드 데스크톱 등록을 지운다(CEP 디버그 모드는 다른 Adobe 확장이 쓸 수 있어 남긴다).

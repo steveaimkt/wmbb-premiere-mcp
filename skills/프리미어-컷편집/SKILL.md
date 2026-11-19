@@ -31,6 +31,29 @@ description: 프리미어 MCP로 촬영본을 단계별 컷편집한다. 음원 
 
 ---
 
+## STEP -1 — 연결 사전 점검 (도구가 안 보일 때만)
+
+**먼저 이 세션에 프리미어 도구가 있는지 본다.** 서버 이름은 설치마다 다르다(`premiere-pro` 등). 그래서 이름이 아니라 **도구 이름**으로 찾는다.
+```
+ToolSearch("get_project_info apply_timeline_removals list_sequence_tracks")
+```
+- 잡히면 바로 STEP 0.
+- 안 잡히면 **같은 검색을 반복하지 않는다.** 아래 표를 위에서부터 **한 번에** 점검하고 원인을 보고한다.
+
+| # | 점검 | 명령 | 막힌 경우 |
+|---|---|---|---|
+| 1 | 등록 범위 | `claude mcp list` · `claude mcp get <이름>` | 다른 프로젝트 폴더(local scope)에만 등록됐으면 이 폴더에선 도구가 안 붙는다. **폴더를 옮긴 뒤 자주 생긴다.** → `--scope user`로 다시 등록 |
+| 2 | 서버 파일 | `ls <저장소>/dist/index.js` | 없으면 `npm run build` |
+| 3 | `PYTHON_PATH` | 등록된 경로에서 `python -c "import faster_whisper"` | 경로가 없거나 import 실패면 STEP 1 음원 분석이 깨진다. **연결이 떠도 여기서 실패한다.** faster-whisper가 있는 Python으로 바꾼다 |
+| 4 | ffmpeg | `FFMPEG_PATH` · `FFPROBE_PATH` 존재 | 없으면 경로를 고친다 |
+| 5 | 브릿지 | 패널 Bridge `Connected` · Premiere `Ready` · `<PREMIERE_TEMP_DIR>/config.json` 생김 | 패널에서 **Start Bridge** · Temp Directory 값이 등록값과 같은지 |
+
+**판정 함정**
+- `pgrep`에 서버 node 프로세스가 떠 있어도 **다른 클라이언트(데스크톱 앱 등)가 띄운 것**일 수 있다. 이 세션 연결의 근거가 아니다.
+- `claude mcp get`이 `✔ Connected`여도 **지금 세션의 도구 목록은 시작할 때 고정**된다. 등록·수정 뒤에는 **세션을 다시 시작해야** 도구가 붙는다. 이 세션 안에서 재검색해도 안 나온다.
+
+**MCP 등록은 설정 변경이다.** 원인과 고칠 명령을 보여 주고 사용자 확인을 받은 뒤 실행한다. 고친 뒤에는 "새 세션에서 「컷편집 시작하자」"로 마친다. 되돌리는 명령(`claude mcp remove <이름> --scope user`)도 함께 알린다. 설치 자체가 안 돼 있으면 `프리미어-MCP-설치` 스킬로 넘긴다.
+
 ## STEP 0 — 연결·대상 확인 + 촬영 유형 판별
 
 `get_project_info` → `list_sequences` → `list_project_items`(mediaPath 확보).
