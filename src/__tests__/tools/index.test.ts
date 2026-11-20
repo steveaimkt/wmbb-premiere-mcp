@@ -6,6 +6,9 @@ import { PremiereProTools } from '../../tools/index.js';
 import { PremiereProBridge } from '../../bridge/index.js';
 
 jest.mock('../../bridge/index.js');
+// whisperRunner uses import.meta, which the CJS test transform cannot parse; a factory
+// mock keeps the real module from ever loading (it is not exercised by these tests).
+jest.mock('../../utils/whisperRunner.js', () => ({ transcribeAudio: jest.fn() }));
 
 describe('PremiereProTools', () => {
   let tools: PremiereProTools;

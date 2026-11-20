@@ -16,7 +16,9 @@
     "format": "prettier --write src/**/*.ts",
     "simulate": "node scripts/simulate-cuts.mjs 1000",
     "prepare": "npm run build",
-    "skills:install": "bash ./scripts/install-skills.sh"
+    "skills:install": "bash ./scripts/install-skills.sh",
+    "voice-orders": "node dist/voiceOrders/main.js",
+    "voice-orders:install": "bash ./scripts/install-voice-orders.sh"
   },
   "keywords": [
     "mcp",
@@ -35,6 +37,7 @@
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "@modelcontextprotocol/sdk": "^0.5.0",
     "fs-extra": "^11.2.0",
     "node-fetch": "^3.3.2",

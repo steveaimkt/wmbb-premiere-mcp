@@ -217,6 +217,25 @@ ffmpeg -version
 
 ---
 
+## 음성 지시 (Voice Orders, optional)
+
+영상을 보다가 **오른쪽 Option(⌥)을 누른 채 말하면** 그 자리에 마커가 찍히고, 프리미어 안의 **AI 음성 지시** 패널에 지시가 쌓인다. 검토 후 **체크한 N개 적용**을 누르면 "AI 자막" 트랙에 자막이, V1 클립에 확대가 들어간다(적용 전 시퀀스 자동 백업).
+
+```bash
+npm run voice-orders:install
+```
+
+설치 스크립트가 하는 일: 빌드 → 프리미어 패널 복사 → 단축키 앱(`helpers/VoiceHotkey`) 빌드 → launchd 등록(로그인하면 데몬·단축키 앱 자동 실행).
+
+처음 한 번만:
+1. **API 키:** Claude Console에서 키를 복사한 뒤 `zsh scripts/save-voice-orders-key.sh` → Enter. 키는 로그인 키체인(`wmbb-voice-orders`)에만 저장된다.
+2. **권한:** 시스템 설정 → 개인정보 보호 및 보안 → **손쉬운 사용**에서 VoiceHotkey 켜기, 마이크 허용. 단축키 앱을 다시 빌드하면 손쉬운 사용을 다시 켜야 할 수 있다.
+3. **프리미어 재시작** 후 창 → 확장 → **AI 음성 지시**(타임라인 위에 도킹 권장), MCP Bridge에서 Start Bridge.
+
+받아쓰기는 `PYTHON_PATH`의 faster-whisper(기본 `~/.local/share/premiere-dub-edit/venv/bin/python`). 단축키는 `~/Library/Application Support/wmbb-premiere-mcp/voice-orders/settings.json`의 `hotkeyKeyCode`(기본 61 = 오른쪽 Option, F13 = 105). 자막 모양은 `cep-plugin/assets/voice-orders-caption.aep`를 AE에서 고친 뒤 `scripts/export-voice-orders-caption.jsx`로 내보낸다.
+
+로그: `~/Library/Logs/wmbb-voice-orders.log`, `~/Library/Logs/wmbb-voice-hotkey.log`. 데몬 재시작: `launchctl kickstart -k gui/$(id -u)/com.wmbb.voice-orders.daemon`.
+
 ## Uninstall
 
 ```bash

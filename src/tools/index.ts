@@ -14,7 +14,10 @@ import { buildCues, serializeCues } from '../utils/captions.js';
 import { findTextSpans, DEFAULT_FILLERS } from '../utils/cutEditing.js';
 import { transcribeAudio } from '../utils/whisperRunner.js';
 import { proofreadTranscript } from '../utils/proofread.js';
-import { writeFileSync } from 'fs';
+import { parseProjectCaptions, newCues, countSrtCues } from '../utils/prprojCaptions.js';
+import { writeFileSync, existsSync, readFileSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, extname } from 'path';
 
 export interface MCPTool {
   name: string;
@@ -102,6 +105,97 @@ export class PremiereProTools {
           videoTrackIndex: z.number().optional().describe('Video track index. Default 0 (V1).'),
           audioTrackIndex: z.number().optional().describe('Audio track index. Default 0 (A1).'),
           withAudio: z.boolean().optional().describe('Place the linked audio too. Default true.')
+        })
+      },
+      {
+        name: 'import_files',
+        description: 'Imports files into the project with app.project.importFiles — media (MP4/WAV/...), subtitle files (SRT), and Final Cut Pro 7 XML (which arrives as a new sequence plus its media). Returns every project item the import created, with its id, so the next call (add_caption_track, insert_clip, rename_item) can use it straight away. `verify` re-reads each new item from the project and checks that every requested path produced one; a path that produced nothing makes success false.',
+        inputSchema: z.object({
+          paths: z.array(z.string()).min(1).describe('Absolute file paths to import.'),
+          targetBinId: z.string().optional().describe('Project item id of the bin to import into. Defaults to the project root.'),
+          targetBinName: z.string().optional().describe('Name of a top-level bin to import into; created if it does not exist. Ignored when targetBinId is given.'),
+          suppressUI: z.boolean().optional().describe('Suppress Premiere import dialogs. Default true — a modal dialog blocks the bridge until someone clicks it.')
+        })
+      },
+      {
+        name: 'rename_item',
+        description: 'Renames a project item (clip, bin, or sequence). For a sequence pass sequenceId; the project-panel item and the sequence name are changed together (setting Sequence.name alone does not reach the project panel). `verify` re-reads the name.',
+        inputSchema: z.object({
+          projectItemId: z.string().optional().describe('Project item id (from list_project_items or import_files).'),
+          sequenceId: z.string().optional().describe('Sequence id (from list_sequences). Use instead of projectItemId for a sequence.'),
+          newName: z.string().min(1).describe('The new name.')
+        })
+      },
+      {
+        name: 'add_caption_track',
+        description: 'Creates a caption track on a sequence from an SRT project item (Sequence.createCaptionTrack). Pass projectItemId of an imported SRT, or srtPath to import and attach in one call. ExtendScript cannot read caption tracks back, so `verify` exports the sequence to a temporary project file and counts the caption tracks and cues there: success is false unless a new track appeared and its cue count matches the SRT. Track style (font, position, alignment) is NOT settable from script — the new track takes the project default; restyle it in Premiere or use MOGRT graphics.',
+        inputSchema: z.object({
+          sequenceId: z.string().describe('Sequence to add the caption track to.'),
+          projectItemId: z.string().optional().describe('Project item id of an imported SRT.'),
+          srtPath: z.string().optional().describe('Absolute SRT path; imported first when projectItemId is not given.'),
+          startTime: z.number().optional().describe('Timeline seconds where the first SRT timestamp 00:00:00 lands. Default 0.'),
+          captionFormat: z.enum(['subtitle', 'cea-608', 'cea-708', 'teletext', 'ebu', 'op-47']).optional().describe('Caption format. Default "subtitle".')
+        })
+      },
+      {
+        name: 'set_clip_motion',
+        description: 'Sets the Motion effect (Scale / Position) of a timeline clip, either as a static value or as keyframes — e.g. a smooth zoom-in: keyframes [{time:0,scale:100},{time:2,scale:120}] with interpolation "bezier". Position is normalized (0.5,0.5 = frame centre) unless positionUnits is "pixels". Keyframe times are seconds from the clip\'s start on the timeline by default (timeBase "sequence" for absolute timeline seconds); they are converted to the clip\'s media time internally, which is what Premiere stores. `verify` re-reads the keyframes/values from the clip and success is false if any differ.',
+        inputSchema: z.object({
+          clipId: z.string().describe('Timeline clip id (from list_sequence_tracks).'),
+          sequenceId: z.string().optional().describe('Sequence that holds the clip. Recommended when the clip is not in the active sequence.'),
+          scale: z.number().optional().describe('Static scale percent (100 = original). Removes existing scale keyframes.'),
+          position: z.array(z.number()).length(2).optional().describe('Static position [x, y]. Removes existing position keyframes.'),
+          keyframes: z.array(z.object({
+            time: z.number().describe('Seconds from clip start (or timeline seconds with timeBase "sequence").'),
+            scale: z.number().optional().describe('Scale percent at this key.'),
+            position: z.array(z.number()).length(2).optional().describe('Position [x, y] at this key.')
+          })).optional().describe('Keyframes to add. A property gets keyframes only if at least one key sets it.'),
+          timeBase: z.enum(['clip', 'sequence']).optional().describe('"clip" (default): key times are seconds from the clip start. "sequence": absolute timeline seconds.'),
+          positionUnits: z.enum(['normalized', 'pixels']).optional().describe('"normalized" (default, 0..1 of the frame) or "pixels" (converted using the sequence frame size).'),
+          interpolation: z.enum(['linear', 'bezier', 'hold']).optional().describe('Interpolation applied to every added key. Default "bezier" (eased).'),
+          clearExisting: z.boolean().optional().describe('Remove existing keyframes on the properties being keyed first. Default true.')
+        })
+      },
+      {
+        name: 'set_track_mute',
+        description: 'Mutes or unmutes audio tracks of a sequence (Track.setMute). With trackType "video" it toggles the track output (eye) instead. `verify` re-reads isMuted() for each track.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence. Defaults to the active sequence.'),
+          trackIndices: z.array(z.number().int().min(0)).min(1).describe('Track indices (0 = A1).'),
+          muted: z.boolean().optional().describe('true mutes, false unmutes. Default true.'),
+          trackType: z.enum(['audio', 'video']).optional().describe('Default "audio".')
+        })
+      },
+      {
+        name: 'get_playhead',
+        description: 'Reads the playhead (CTI) position of a sequence in seconds.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence. Defaults to the active sequence.')
+        })
+      },
+      {
+        name: 'set_marker',
+        description: 'Creates a sequence marker, or updates/moves an existing one when markerId (the marker guid) is given. Re-reads the marker: name or time mismatch → success:false. Colour indices on 26.5.2: 0 green, 1 red, 2 purple, 3 orange, 4 yellow, 5 white, 6 blue, 7 cyan.',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence. Defaults to the active sequence.'),
+          timeSec: z.number().min(0).describe('Marker time in seconds.'),
+          name: z.string().describe('Marker name.'),
+          comments: z.string().optional().describe('Marker comments.'),
+          colorIndex: z.number().int().min(0).max(7).optional().describe('Marker colour index (see description).'),
+          markerId: z.string().optional().describe('guid of a marker to update instead of creating one. If it no longer exists, a new marker is created.')
+        })
+      },
+      {
+        name: 'place_mogrt_text',
+        description: 'Places an After Effects .mogrt on the video track named trackName (adds a top video track with that name if missing), sets its first editable text, trims it to [startSec, endSec] and names the clip. Re-reads start/end/text: any mismatch → success:false. A Premiere-authored .mogrt has no scriptable text and is rejected (the placed clip is removed).',
+        inputSchema: z.object({
+          sequenceId: z.string().optional().describe('Sequence. Defaults to the active sequence.'),
+          templatePath: z.string().describe('Absolute path of the .mogrt (must be authored in After Effects).'),
+          trackName: z.string().describe('Video track name, e.g. "AI 자막".'),
+          startSec: z.number().min(0).describe('Start time in seconds.'),
+          endSec: z.number().min(0).describe('End time in seconds (> startSec).'),
+          text: z.string().describe('Text to set.'),
+          clipName: z.string().optional().describe('Clip name. Defaults to the text.')
         })
       },
       {
@@ -426,6 +520,22 @@ export class PremiereProTools {
           return await this.listSequenceTracks(args.sequenceId, args.includeSourceTimes, args.compact);
         case 'insert_clip':
           return await this.insertClip(args);
+        case 'import_files':
+          return await this.importFiles(args);
+        case 'rename_item':
+          return await this.renameItem(args);
+        case 'add_caption_track':
+          return await this.addCaptionTrack(args);
+        case 'set_clip_motion':
+          return await this.setClipMotion(args);
+        case 'set_track_mute':
+          return await this.setTrackMute(args);
+        case 'get_playhead':
+          return await this.getPlayhead(args);
+        case 'set_marker':
+          return await this.setMarker(args);
+        case 'place_mogrt_text':
+          return await this.placeMogrtText(args);
         case 'get_project_info':
           return await this.getProjectInfo();
         case 'save_project':
@@ -875,6 +985,596 @@ export class PremiereProTools {
       ...parsed,
       success: problems.length === 0 ? parsed.success : false,
       verify,
+      verified: problems.length === 0,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  /** Run a script and always hand back a parsed object. */
+  private async runScript(script: string): Promise<any> {
+    const raw: any = await this.bridge.executeScript(script);
+    try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return { success: false, error: String(raw) }; }
+  }
+
+  /**
+   * Import files and report every project item the import created.
+   *
+   * importFiles returns only a boolean, so the new items are found by diffing the
+   * project's node ids before and after. An FCP7 XML produces no item for the XML
+   * itself — it arrives as a sequence plus the media it references — so for
+   * those extensions a new sequence is what satisfies the path.
+   */
+  private async importFiles(args: any): Promise<any> {
+    const { paths, targetBinId, targetBinName, suppressUI = true } = args ?? {};
+    const list: string[] = Array.isArray(paths) ? paths : [];
+    const missing = list.filter((p) => !pathVariants(p).some((v) => existsSync(v)));
+    if (missing.length) {
+      return JSON.stringify({ success: false, error: 'file not found', missing });
+    }
+
+    const result = await this.runScript(`
+      try {
+        var bin = null;
+        ${targetBinId ? `bin = __findProjectItem(${JSON.stringify(targetBinId)});
+        if (!bin || bin.type !== 2) return JSON.stringify({ success: false, error: "targetBinId is not a bin" });` : ''}
+        ${!targetBinId && targetBinName ? `
+        var root = app.project.rootItem;
+        for (var b = 0; b < root.children.numItems; b++) {
+          if (root.children[b].type === 2 && root.children[b].name === ${JSON.stringify(targetBinName)}) { bin = root.children[b]; break; }
+        }
+        if (!bin) bin = root.createBin(${JSON.stringify(targetBinName)});` : ''}
+        if (!bin) bin = app.project.rootItem;
+
+        function snap() {
+          var seen = {};
+          function walk(n) { seen[n.nodeId] = true; if (n.children) for (var i = 0; i < n.children.numItems; i++) walk(n.children[i]); }
+          walk(app.project.rootItem);
+          return seen;
+        }
+        var seqItems = {};
+        for (var s = 0; s < app.project.sequences.numSequences; s++) {
+          var sq = app.project.sequences[s];
+          try { if (sq.projectItem) seqItems[sq.projectItem.nodeId] = sq.sequenceID; } catch (e) {}
+        }
+
+        var before = snap();
+        var ok = app.project.importFiles(${JSON.stringify(list)}, ${suppressUI !== false}, bin, false);
+
+        for (var s = 0; s < app.project.sequences.numSequences; s++) {
+          var sq = app.project.sequences[s];
+          try { if (sq.projectItem) seqItems[sq.projectItem.nodeId] = sq.sequenceID; } catch (e) {}
+        }
+        var created = [];
+        function collect(n) {
+          if (!before[n.nodeId]) {
+            var mp = null; try { mp = n.getMediaPath(); } catch (e) {}
+            var isSeq = !!seqItems[n.nodeId];
+            created.push({
+              id: n.nodeId,
+              name: n.name,
+              type: n.type === 2 ? "bin" : (isSeq ? "sequence" : "footage"),
+              mediaPath: mp || null,
+              sequenceId: isSeq ? seqItems[n.nodeId] : null,
+              treePath: n.treePath
+            });
+          }
+          if (n.children) for (var i = 0; i < n.children.numItems; i++) collect(n.children[i]);
+        }
+        collect(app.project.rootItem);
+
+        return JSON.stringify({ success: true, importReturned: !!ok, binId: bin.nodeId, binName: bin.name, items: created });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+    if (!result || result.success === false) return JSON.stringify(result);
+
+    // --- verify: re-read every created item and map it back to a requested path ---
+    const items: any[] = result.items || [];
+    const reread = await this.runScript(`
+      try {
+        var ids = ${JSON.stringify(items.map((i) => i.id))};
+        var out = [];
+        for (var i = 0; i < ids.length; i++) {
+          var it = __findProjectItem(ids[i]);
+          var mp = null; if (it) { try { mp = it.getMediaPath(); } catch (e) {} }
+          out.push({ id: ids[i], exists: !!it, name: it ? it.name : null, mediaPath: mp || null });
+        }
+        return JSON.stringify({ success: true, items: out });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+
+    const nfc = (p: string | null | undefined) => (p ? p.normalize('NFC').replace(/\/+$/, '') : '');
+    const sequenceLike = new Set(['.xml', '.aaf', '.edl', '.prproj']);
+    const live: any[] = reread?.items || [];
+    const perPath = list.map((p) => {
+      const isSeqFile = sequenceLike.has(extname(p).toLowerCase());
+      const matched = isSeqFile
+        ? items.filter((i) => i.type === 'sequence').map((i) => i.id)
+        : live.filter((i) => i.exists && nfc(i.mediaPath) === nfc(p)).map((i) => i.id);
+      return { path: p, kind: isSeqFile ? 'sequence-file' : 'media', itemIds: matched, imported: matched.length > 0 };
+    });
+    const problems: string[] = [];
+    for (const r of perPath) if (!r.imported) problems.push(`${r.path}: no project item appeared (already imported, unsupported, or a dialog was cancelled)`);
+    if (live.some((i) => !i.exists)) problems.push('an imported item vanished on re-read');
+
+    return JSON.stringify({
+      ...result,
+      success: problems.length === 0,
+      verify: { perPath, items: live },
+      verified: problems.length === 0,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  /** Rename a project item; for a sequence the panel item carries the name. */
+  private async renameItem(args: any): Promise<any> {
+    const { projectItemId, sequenceId, newName } = args ?? {};
+    if (!projectItemId && !sequenceId) return JSON.stringify({ success: false, error: 'pass projectItemId or sequenceId' });
+
+    const locate = `
+        var item = null, seq = null;
+        ${sequenceId ? `seq = __findSequence(${JSON.stringify(sequenceId)}); if (seq) item = seq.projectItem;` : ''}
+        ${projectItemId ? `if (!item) item = __findProjectItem(${JSON.stringify(projectItemId)});` : ''}
+        if (!item) return JSON.stringify({ success: false, error: "item not found" });
+        if (!seq) {
+          for (var s = 0; s < app.project.sequences.numSequences; s++) {
+            var sq = app.project.sequences[s];
+            try { if (sq.projectItem && sq.projectItem.nodeId === item.nodeId) { seq = sq; break; } } catch (e) {}
+          }
+        }`;
+
+    const result = await this.runScript(`
+      try {
+        ${locate}
+        var oldName = item.name;
+        item.name = ${JSON.stringify(newName)};
+        return JSON.stringify({ success: true, projectItemId: item.nodeId, sequenceId: seq ? seq.sequenceID : null, oldName: oldName, newName: ${JSON.stringify(newName)} });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+    if (!result || result.success === false) return JSON.stringify(result);
+
+    const reread = await this.runScript(`
+      try {
+        ${locate}
+        return JSON.stringify({ success: true, itemName: item.name, sequenceName: seq ? seq.name : null });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+    const problems: string[] = [];
+    if (!reread?.success) problems.push('could not re-read the item');
+    else {
+      if (reread.itemName !== newName) problems.push(`project item reads "${reread.itemName}"`);
+      if (reread.sequenceName !== null && reread.sequenceName !== newName) problems.push(`sequence reads "${reread.sequenceName}"`);
+    }
+    return JSON.stringify({
+      ...result,
+      success: problems.length === 0,
+      verify: reread,
+      verified: problems.length === 0,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  /**
+   * Caption tracks are invisible to the ExtendScript DOM, so the only way to
+   * re-read one is to export the sequence as a project and parse the file.
+   */
+  private async readCaptionsViaExport(sequenceId: string): Promise<{ trackCount: number; cues: { start: number; end: number }[] } | { error: string }> {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-capcheck-'));
+    const file = join(dir, 'capcheck.prproj');
+    try {
+      const r = await this.runScript(`
+        try {
+          var seq = __findSequence(${JSON.stringify(sequenceId)});
+          if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+          seq.exportAsProject(${JSON.stringify(file)});
+          return JSON.stringify({ success: true });
+        } catch (e) {
+          return JSON.stringify({ success: false, error: e.toString() });
+        }
+      `);
+      if (!r?.success) return { error: r?.error || 'exportAsProject failed' };
+      if (!existsSync(file)) return { error: 'exportAsProject wrote no file' };
+      return parseProjectCaptions(readFileSync(file));
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* temp cleanup is best-effort */ }
+    }
+  }
+
+  private async addCaptionTrack(args: any): Promise<any> {
+    const { sequenceId, srtPath, startTime = 0, captionFormat = 'subtitle' } = args ?? {};
+    let { projectItemId } = args ?? {};
+    let srtFile: string | null = srtPath || null;
+    let imported: any = null;
+
+    if (!projectItemId) {
+      if (!srtPath) return JSON.stringify({ success: false, error: 'pass projectItemId or srtPath' });
+      imported = JSON.parse(await this.importFiles({ paths: [srtPath] }));
+      projectItemId = imported?.verify?.perPath?.[0]?.itemIds?.[0];
+      if (!projectItemId) return JSON.stringify({ success: false, error: 'SRT import produced no project item', imported });
+    }
+    if (!srtFile) {
+      const mp = await this.runScript(`
+        try { var it = __findProjectItem(${JSON.stringify(projectItemId)}); return JSON.stringify({ success: !!it, mediaPath: it ? it.getMediaPath() : null }); }
+        catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+      `);
+      srtFile = mp?.mediaPath || null;
+    }
+    let expectedCues: number | null = null;
+    if (srtFile) {
+      const onDisk = pathVariants(srtFile).find((v) => existsSync(v));
+      if (onDisk) expectedCues = countSrtCues(readFileSync(onDisk, 'utf8'));
+    }
+
+    const before = await this.readCaptionsViaExport(sequenceId);
+    const raw: any = await this.createCaptionTrack(sequenceId, String(projectItemId), startTime, captionFormat);
+    const made = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!made?.success) return JSON.stringify({ ...made, imported });
+    const after = await this.readCaptionsViaExport(sequenceId);
+
+    const problems: string[] = [];
+    let verify: any;
+    if ('error' in before || 'error' in after) {
+      verify = null;
+      problems.push(`could not re-read caption tracks: ${'error' in after ? after.error : (before as any).error}`);
+    } else {
+      const added = newCues(before.cues, after.cues);
+      verify = {
+        method: 'Sequence.exportAsProject + parse',
+        captionTracksBefore: before.trackCount,
+        captionTracksAfter: after.trackCount,
+        newCueCount: added.length,
+        expectedCueCount: expectedCues,
+        firstNewCueStartSec: added.length ? added[0]!.start : null,
+        lastNewCueEndSec: added.length ? added[added.length - 1]!.end : null,
+      };
+      if (after.trackCount !== before.trackCount + 1) problems.push(`caption tracks went ${before.trackCount} -> ${after.trackCount}, expected +1`);
+      if (expectedCues !== null && added.length !== expectedCues) problems.push(`SRT has ${expectedCues} cues, ${added.length} landed`);
+    }
+
+    return JSON.stringify({
+      ...made,
+      sequenceId,
+      projectItemId,
+      imported,
+      success: problems.length === 0,
+      verify,
+      verified: problems.length === 0,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  /**
+   * Motion is component "AE.ADBE Motion"; its property names are localized
+   * ("위치", "비율 조정"), so Position and Scale are addressed by index (0, 1).
+   * Keyframe times live in the clip's media time: clip.inPoint + offset.
+   */
+  private async setClipMotion(args: any): Promise<any> {
+    const {
+      clipId, sequenceId, scale, position, keyframes,
+      timeBase = 'clip', positionUnits = 'normalized', interpolation = 'bezier', clearExisting = true,
+    } = args ?? {};
+    const keys: any[] = Array.isArray(keyframes) ? keyframes : [];
+    if (scale === undefined && position === undefined && keys.length === 0) {
+      return JSON.stringify({ success: false, error: 'nothing to set - pass scale, position, or keyframes' });
+    }
+    // Premiere keyframe interpolation codes, as stored in .prproj (0/4/5 are the
+    // only values Premiere itself writes for these modes).
+    const interpCode = { linear: 0, hold: 4, bezier: 5 }[interpolation as 'linear' | 'hold' | 'bezier'] ?? 5;
+    const seqArg = sequenceId ? JSON.stringify(sequenceId) : 'undefined';
+
+    const findMotion = `
+        var found = __findClip(${JSON.stringify(clipId)}, ${seqArg});
+        if (!found) return JSON.stringify({ success: false, error: "clip not found" });
+        if (found.trackType !== "video") return JSON.stringify({ success: false, error: "clip is not a video clip" });
+        var clip = found.clip;
+        var motion = null;
+        for (var c = 0; c < clip.components.numItems; c++) if (clip.components[c].matchName === "AE.ADBE Motion") motion = clip.components[c];
+        if (!motion) return JSON.stringify({ success: false, error: "clip has no Motion component" });
+        var P = motion.properties[0], S = motion.properties[1];
+        var inSec = clip.inPoint.seconds, startSec = clip.start.seconds, durSec = clip.duration.seconds;
+        var W = found.sequence.frameSizeHorizontal, H = found.sequence.frameSizeVertical;
+        function T(sec) { var t = new Time(); t.seconds = sec; return t; }`;
+
+    const result = await this.runScript(`
+      try {
+        ${findMotion}
+        var keys = ${JSON.stringify(keys)};
+        var PIX = ${JSON.stringify(positionUnits === 'pixels')};
+        var BASE_SEQ = ${JSON.stringify(timeBase === 'sequence')};
+        function pos(v) { return PIX ? [v[0] / W, v[1] / H] : [v[0], v[1]]; }
+
+        var wantS = false, wantP = false;
+        for (var k = 0; k < keys.length; k++) { if (keys[k].scale !== undefined) wantS = true; if (keys[k].position !== undefined) wantP = true; }
+
+        // Validate every key before touching the clip.
+        var placed = [];
+        for (var k = 0; k < keys.length; k++) {
+          var off = BASE_SEQ ? keys[k].time - startSec : keys[k].time;
+          if (off < -0.0005 || off > durSec + 0.0005) return JSON.stringify({ success: false, error: "key " + k + " at " + keys[k].time + "s is outside the clip (duration " + durSec + "s)" });
+          placed.push(inSec + off);
+        }
+
+        ${scale !== undefined ? `if (S.isTimeVarying()) S.setTimeVarying(false); S.setValue(${Number(scale)}, true);` : ''}
+        ${position !== undefined ? `if (P.isTimeVarying()) P.setTimeVarying(false); P.setValue(pos(${JSON.stringify(position)}), true);` : ''}
+
+        function keyProp(prop, field) {
+          if (${clearExisting !== false} && prop.isTimeVarying()) prop.setTimeVarying(false);
+          if (!prop.isTimeVarying()) prop.setTimeVarying(true);
+          for (var k = 0; k < keys.length; k++) {
+            if (keys[k][field] === undefined) continue;
+            var t = T(placed[k]);
+            prop.addKey(t);
+            prop.setValueAtKey(t, field === "position" ? pos(keys[k].position) : keys[k].scale, true);
+            try { prop.setInterpolationTypeAtKey(t, ${interpCode}, true); } catch (e) {}
+          }
+        }
+        if (wantS) keyProp(S, "scale");
+        if (wantP) keyProp(P, "position");
+
+        return JSON.stringify({ success: true, clipId: clip.nodeId, clipName: clip.name, sequenceId: found.sequenceId, clipStartSec: startSec, clipDurationSec: durSec, interpolationCode: ${interpCode} });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+    if (!result || result.success === false) return JSON.stringify(result);
+
+    // --- verify: read the values/keys back from the clip ---
+    const reread = await this.runScript(`
+      try {
+        ${findMotion}
+        function dump(prop) {
+          var out = { timeVarying: prop.isTimeVarying(), value: null, keys: [] };
+          try { var v = prop.getValue(); out.value = (v && v.length !== undefined) ? [v[0], v[1]] : v; } catch (e) {}
+          if (out.timeVarying) {
+            var ks = prop.getKeys() || [];
+            for (var i = 0; i < ks.length; i++) {
+              var kv = prop.getValueAtKey(ks[i]);
+              out.keys.push({ clipTime: ks[i].seconds - inSec, value: (kv && kv.length !== undefined) ? [kv[0], kv[1]] : kv });
+            }
+          }
+          return out;
+        }
+        return JSON.stringify({ success: true, scale: dump(S), position: dump(P), frame: [W, H] });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+
+    const problems: string[] = [];
+    if (!reread?.success) problems.push('could not re-read the Motion values');
+    else {
+      const [W, H] = reread.frame;
+      const toNorm = (v: number[]) => (positionUnits === 'pixels' ? [v[0]! / W, v[1]! / H] : v);
+      const close = (a: any, b: any, tol: number) =>
+        Array.isArray(b) ? Array.isArray(a) && Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol : Math.abs(Number(a) - b) <= tol;
+      if (scale !== undefined && !close(reread.scale.value, scale, 0.01)) problems.push(`scale reads ${reread.scale.value}, wanted ${scale}`);
+      if (position !== undefined && !close(reread.position.value, toNorm(position), 0.001)) problems.push(`position reads ${reread.position.value}`);
+      for (const k of keys) {
+        const off = timeBase === 'sequence' ? k.time - result.clipStartSec : k.time;
+        for (const [field, want, tol] of [['scale', k.scale, 0.01], ['position', k.position && toNorm(k.position), 0.001]] as const) {
+          if (want === undefined) continue;
+          const hit = reread[field].keys.find((rk: any) => Math.abs(rk.clipTime - off) <= 0.05);
+          if (!hit) problems.push(`${field} key at ${k.time}s missing`);
+          else if (!close(hit.value, want, tol as number)) problems.push(`${field} key at ${k.time}s reads ${hit.value}`);
+        }
+      }
+    }
+    return JSON.stringify({
+      ...result,
+      success: problems.length === 0,
+      verify: reread,
+      verified: problems.length === 0,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  private seqExpr(sequenceId?: string): string {
+    return sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence';
+  }
+
+  private async getPlayhead(args: any): Promise<any> {
+    const r = await this.runScript(`
+      try {
+        var seq = ${this.seqExpr(args?.sequenceId)};
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, timeSec: Number(seq.getPlayerPosition().seconds) });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    return JSON.stringify(r);
+  }
+
+  private async setMarker(args: any): Promise<any> {
+    const { sequenceId, timeSec, name, comments = '', colorIndex, markerId } = args ?? {};
+    const find = `
+        var seq = ${this.seqExpr(sequenceId)};
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        function __findMarker(guid) {
+          if (!guid) return null;
+          var m = seq.markers.getFirstMarker();
+          while (m) { if (m.guid === guid) return m; m = seq.markers.getNextMarker(m); }
+          return null;
+        }`;
+    const result = await this.runScript(`
+      try {
+        ${find}
+        var t = ${JSON.stringify(timeSec)};
+        var m = __findMarker(${JSON.stringify(markerId ?? '')});
+        // 26.5.2: marker.start/end take a number of seconds; a Time object throws, and start.seconds = x is a silent no-op
+        if (m) { m.start = t; m.end = t; }
+        else m = seq.markers.createMarker(t);
+        m.name = ${JSON.stringify(name)};
+        m.comments = ${JSON.stringify(comments)};
+        ${colorIndex === undefined ? '' : `m.setColorByIndex(${JSON.stringify(colorIndex)});`}
+        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, markerId: m.guid });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    if (!result || result.success === false) return JSON.stringify(result);
+    const reread = await this.runScript(`
+      try {
+        ${find}
+        var m = __findMarker(${JSON.stringify(result.markerId)});
+        if (!m) return JSON.stringify({ success: true, found: false });
+        return JSON.stringify({ success: true, found: true, timeSec: Number(m.start.seconds), name: m.name, colorIndex: m.getColorByIndex() });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    const problems: string[] = [];
+    if (!reread?.success || !reread.found) problems.push('marker not found on re-read');
+    else {
+      if (Math.abs(reread.timeSec - timeSec) > 0.05) problems.push(`time reads ${reread.timeSec}, wanted ${timeSec}`);
+      if (reread.name !== name) problems.push(`name reads "${reread.name}"`);
+      if (colorIndex !== undefined && reread.colorIndex !== colorIndex) problems.push(`colour reads ${reread.colorIndex}, wanted ${colorIndex}`);
+    }
+    return JSON.stringify({
+      ...result,
+      success: problems.length === 0,
+      verify: reread?.found ? { timeSec: reread.timeSec, name: reread.name, colorIndex: reread.colorIndex } : null,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  private async placeMogrtText(args: any): Promise<any> {
+    const { sequenceId, templatePath, trackName, startSec, endSec, text, clipName } = args ?? {};
+    if (!(endSec > startSec)) return JSON.stringify({ success: false, error: 'endSec must be greater than startSec' });
+    const TPS = 254016000000;
+    const result = await this.runScript(`
+      var placed = null;
+      try {
+        var seq = ${this.seqExpr(sequenceId)};
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var f = new File(${JSON.stringify(templatePath)});
+        if (!f.exists) return JSON.stringify({ success: false, error: "template not found: " + f.fsName });
+        var trackName = ${JSON.stringify(trackName)}, trk = -1;
+        for (var v = 0; v < seq.videoTracks.numTracks; v++) if (seq.videoTracks[v].name === trackName) trk = v;
+        var addedTrack = false;
+        if (trk < 0) {
+          if (!app.project.activeSequence || app.project.activeSequence.sequenceID !== seq.sequenceID) app.project.openSequence(seq.sequenceID);
+          app.enableQE();
+          var n0 = seq.videoTracks.numTracks;
+          qe.project.getActiveSequence().addTracks(1, n0, 0);
+          if (seq.videoTracks.numTracks !== n0 + 1) return JSON.stringify({ success: false, error: "could not add a video track for " + trackName });
+          trk = n0; seq.videoTracks[trk].name = trackName; addedTrack = true;
+        }
+        var track = seq.videoTracks[trk], before = {}, neighbors = [];
+        var startSec = ${JSON.stringify(startSec)}, endSec = ${JSON.stringify(endSec)};
+        for (var i = 0; i < track.clips.numItems; i++) {
+          var nb = track.clips[i];
+          before[nb.nodeId] = 1;
+          neighbors.push({ id: nb.nodeId, start: nb.start.seconds, end: nb.end.seconds });
+          // importMGT overwrites whatever it lands on (26.5.2 실측) — never import over an existing clip.
+          if (nb.start.seconds < endSec - 0.01 && nb.end.seconds > startSec + 0.01)
+            return JSON.stringify({ success: false, error: "overlaps existing clip '" + nb.name + "' (" + nb.start.seconds + "-" + nb.end.seconds + "s)" });
+        }
+        seq.importMGT(f.fsName, String(Math.round(startSec * ${TPS})), trk, 0);
+        var clip = null;
+        for (var j = 0; j < track.clips.numItems; j++) {
+          var c = track.clips[j];
+          if (!before[c.nodeId] && Math.abs(c.start.seconds - startSec) < 0.05) clip = c;
+        }
+        if (!clip) return JSON.stringify({ success: false, error: "placed graphic not found on re-read" });
+        placed = clip;
+        var mgt = clip.getMGTComponent ? clip.getMGTComponent() : null, prop = null;
+        if (mgt) for (var p = 0; p < mgt.properties.numItems; p++) {
+          var val = ""; try { val = String(mgt.properties[p].getValue()); } catch (e1) {}
+          if (val.indexOf("textEditValue") >= 0) { prop = mgt.properties[p]; break; }
+        }
+        if (!prop) { clip.remove(false, false); return JSON.stringify({ success: false, error: "template has no editable text (not an After Effects .mogrt?)" }); }
+        var doc = JSON.parse(String(prop.getValue()));
+        doc.textEditValue = ${JSON.stringify(text)};
+        prop.setValue(JSON.stringify(doc), 1);
+        var e = new Time(); e.seconds = endSec; clip.end = e;
+        clip.name = ${JSON.stringify(clipName ?? text)};
+        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, clipId: clip.nodeId, trackIndex: trk, addedTrack: addedTrack, neighbors: neighbors });
+      } catch (e) {
+        // Don't leave a half-configured placeholder graphic behind.
+        if (placed) { try { placed.remove(false, false); } catch (e2) {} }
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+    if (!result || result.success === false) return JSON.stringify(result);
+    const reread = await this.runScript(`
+      try {
+        var hit = __findClipInSequence(${this.seqExpr(result.sequenceId)}, ${JSON.stringify(result.clipId)});
+        if (!hit) return JSON.stringify({ success: true, found: false });
+        var clip = hit.clip, mgt = clip.getMGTComponent ? clip.getMGTComponent() : null, txt = null;
+        if (mgt) for (var p = 0; p < mgt.properties.numItems; p++) {
+          var val = ""; try { val = String(mgt.properties[p].getValue()); } catch (e1) {}
+          if (val.indexOf("textEditValue") >= 0) { txt = JSON.parse(val).textEditValue; break; }
+        }
+        var nbs = [], tr = hit.track;
+        for (var n = 0; n < tr.clips.numItems; n++) { var nc = tr.clips[n]; if (nc.nodeId !== clip.nodeId) nbs.push({ id: nc.nodeId, start: nc.start.seconds, end: nc.end.seconds }); }
+        return JSON.stringify({ success: true, found: true, startSec: clip.start.seconds, endSec: clip.end.seconds, text: txt, name: clip.name, trackIndex: hit.trackIndex, neighbors: nbs });
+      } catch (e) { return JSON.stringify({ success: false, error: e.toString() }); }
+    `);
+    const problems: string[] = [];
+    if (!reread?.success || !reread.found) problems.push('clip not found on re-read');
+    else {
+      if (Math.abs(reread.startSec - startSec) > 0.05) problems.push(`start reads ${reread.startSec}, wanted ${startSec}`);
+      if (Math.abs(reread.endSec - endSec) > 0.05) problems.push(`end reads ${reread.endSec}, wanted ${endSec}`);
+      if (reread.text !== text) problems.push(`text reads ${JSON.stringify(reread.text)}`);
+      // The other clips on the track must be exactly as they were (importMGT overwrites what it lands on).
+      if (Array.isArray(result.neighbors) && Array.isArray(reread.neighbors)) {
+        const now = new Map<string, any>(reread.neighbors.map((n: any) => [String(n.id), n]));
+        for (const b of result.neighbors) {
+          const a = now.get(String(b.id));
+          if (!a) problems.push(`neighbouring clip ${b.id} (${b.start}-${b.end}s) is gone`);
+          else if (Math.abs(a.start - b.start) > 0.02 || Math.abs(a.end - b.end) > 0.02) problems.push(`neighbouring clip ${b.id} moved ${b.start}-${b.end}s → ${a.start}-${a.end}s`);
+        }
+      }
+    }
+    return JSON.stringify({
+      ...result,
+      success: problems.length === 0,
+      verify: reread?.found ? { startSec: reread.startSec, endSec: reread.endSec, text: reread.text, name: reread.name } : null,
+      verifyProblems: problems.length ? problems : null,
+    });
+  }
+
+  private async setTrackMute(args: any): Promise<any> {
+    const { sequenceId, trackIndices, muted = true, trackType = 'audio' } = args ?? {};
+    const tracksExpr = trackType === 'video' ? 'seq.videoTracks' : 'seq.audioTracks';
+    const findSeq = `
+        var seq = ${sequenceId ? `__findSequence(${JSON.stringify(sequenceId)})` : 'app.project.activeSequence'};
+        if (!seq) return JSON.stringify({ success: false, error: "Sequence not found" });
+        var idx = ${JSON.stringify(trackIndices)};
+        for (var i = 0; i < idx.length; i++) if (idx[i] >= ${tracksExpr}.numTracks) return JSON.stringify({ success: false, error: "track index " + idx[i] + " out of range (" + ${tracksExpr}.numTracks + " tracks)" });`;
+
+    const result = await this.runScript(`
+      try {
+        ${findSeq}
+        for (var i = 0; i < idx.length; i++) ${tracksExpr}[idx[i]].setMute(${muted ? 1 : 0});
+        return JSON.stringify({ success: true, sequenceId: seq.sequenceID, sequenceName: seq.name, trackType: ${JSON.stringify(trackType)}, trackIndices: idx, muted: ${muted !== false} });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+    if (!result || result.success === false) return JSON.stringify(result);
+
+    const reread = await this.runScript(`
+      try {
+        ${findSeq}
+        var out = [];
+        for (var i = 0; i < idx.length; i++) out.push({ index: idx[i], name: ${tracksExpr}[idx[i]].name, muted: ${tracksExpr}[idx[i]].isMuted() });
+        return JSON.stringify({ success: true, tracks: out });
+      } catch (e) {
+        return JSON.stringify({ success: false, error: e.toString() });
+      }
+    `);
+    const problems: string[] = [];
+    if (!reread?.success) problems.push('could not re-read track state');
+    else for (const t of reread.tracks) if (t.muted !== (muted !== false)) problems.push(`track ${t.index} (${t.name}) reads muted=${t.muted}`);
+    return JSON.stringify({
+      ...result,
+      success: problems.length === 0,
+      verify: reread,
       verified: problems.length === 0,
       verifyProblems: problems.length ? problems : null,
     });
